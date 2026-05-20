@@ -19,6 +19,7 @@ import {
   saveUserProfile,
   getUserProfile,
   getAllUsersLocal,
+  listenAllUsers,
   listenChats,
   createChat,
   listenMessages,
@@ -69,6 +70,7 @@ export default function App() {
   const [showContacts, setShowContacts] = useState(false);
   const [showDevHub, setShowDevHub] = useState(false);
   const [showProfileSettings, setShowProfileSettings] = useState(false);
+  const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
 
   // Avatar presets for quick profiling
   const AVATAR_PRESETS = [
@@ -96,10 +98,10 @@ export default function App() {
   useEffect(() => {
     if (!userId) return;
 
-    // Listen to available users profile updates
-    const localUsersInterval = setInterval(() => {
-      setAllUsers(getAllUsersLocal());
-    }, 4000);
+    // Real-time listener to available registered users
+    const unsubscribeUsers = listenAllUsers((updatedUsers) => {
+      setAllUsers(updatedUsers);
+    });
 
     // List Chats synced
     const unsubscribeChats = listenChats(userId, (updatedRooms) => {
@@ -124,7 +126,7 @@ export default function App() {
     });
 
     return () => {
-      clearInterval(localUsersInterval);
+      unsubscribeUsers();
       unsubscribeChats();
       unsubscribeStatuses();
       unsubscribeCalls();
@@ -232,14 +234,14 @@ export default function App() {
   };
 
   const handleLogout = () => {
-    if (confirm("Are you sure you want to log out from MAHRAJ messenger?")) {
-      setActiveLocalUser(null);
-      setUserId(null);
-      setUserProfile(null);
-      setOtpSent(false);
-      setOtpCode("");
-      setActiveChatId(null);
-    }
+    setActiveLocalUser(null);
+    setUserId(null);
+    setUserProfile(null);
+    setOtpSent(false);
+    setOtpCode("");
+    setActiveChatId(null);
+    setShowLogoutConfirm(false);
+    setShowProfileSettings(false);
   };
 
   // --- ACTIONS: START NEW CHATS & MAKE SIMULATED LIVE CALLS ---
@@ -608,10 +610,13 @@ export default function App() {
       {/* Profile Settings Drawer Overlay Screen */}
       {showProfileSettings && (
         <div id="settings-overlay" className="fixed inset-0 z-30 bg-[#050505]/95 flex items-center justify-center p-4">
-          <div className="w-full max-w-sm bg-[#080808] border-2 border-[#00FF9C]/40 rounded-2xl p-5 shadow-[0_0_20px_rgba(0,255,156,0.2)]">
+          <div className="w-full max-w-sm bg-[#080808] border-2 border-[#00FF9C]/40 rounded-2xl p-5 shadow-[0_0_20px_rgba(0,255,156,0.3)]">
             <div className="flex justify-between items-center border-b border-white/5 pb-2 mb-4">
-              <h3 className="text-white text-xs font-bold tracking-wider uppercase font-mono text-[#00FF9C]">My Profile Settings</h3>
-              <button onClick={() => setShowProfileSettings(false)} className="text-gray-405 hover:text-white font-mono text-xs">
+              <h3 className="text-[#00FF9C] text-xs font-bold tracking-wider uppercase font-mono">My Profile Settings</h3>
+              <button 
+                onClick={() => { setShowProfileSettings(false); setShowLogoutConfirm(false); }} 
+                className="text-gray-500 hover:text-white font-mono text-xs cursor-pointer transition"
+              >
                 // Close
               </button>
             </div>
@@ -638,21 +643,48 @@ export default function App() {
                 <span className="text-[9px] text-gray-650 font-mono text-center block mt-1">Changes are saved to database on input blur</span>
               </div>
 
-              <div className="pt-3 w-full border-t border-white/5 flex gap-2">
-                <button
-                  id="logout-btn"
-                  onClick={handleLogout}
-                  className="flex-1 py-2 bg-red-950/20 hover:bg-red-900/30 text-red-400 border border-red-900/40 hover:border-red-600 font-mono text-xxs rounded transition uppercase"
-                >
-                  <LogOut className="w-3.5 h-3.5 inline mr-1" /> Terminate Session
-                </button>
-                <button
-                  onClick={() => setShowProfileSettings(false)}
-                  className="flex-1 py-2 border border-white/5 hover:border-gray-500 rounded text-xxs font-mono text-gray-300 transition"
-                >
-                  DONE
-                </button>
-              </div>
+              {!showLogoutConfirm ? (
+                <div className="pt-4 w-full border-t border-white/10 flex flex-col gap-2">
+                  <button
+                    id="logout-btn"
+                    onClick={() => setShowLogoutConfirm(true)}
+                    className="w-full py-3 bg-red-500/10 hover:bg-red-500/20 text-[#FF3333] border-2 border-[#FF3333] rounded-xl font-mono text-xs font-bold tracking-widest uppercase transition-all duration-300 shadow-[0_0_15px_rgba(255,51,51,0.25)] flex items-center justify-center gap-2 cursor-pointer"
+                  >
+                    <LogOut className="w-4 h-4" /> TERMINATE SESSION / LOGOUT
+                  </button>
+                  <button
+                    onClick={() => setShowProfileSettings(false)}
+                    className="w-full py-2 bg-transparent hover:bg-white/5 rounded-xl text-xxs font-mono text-gray-400 hover:text-white transition duration-150 uppercase tracking-widest"
+                  >
+                    RETURN TO CONSOLE
+                  </button>
+                </div>
+              ) : (
+                <div className="pt-4 w-full border-t border-[#FF3333]/20 bg-[#120505]/40 p-3.5 rounded-xl border border-[#FF3333]/30 flex flex-col gap-3">
+                  <p className="text-[#FF3333] text-xxs font-mono font-bold tracking-wider uppercase text-center animate-pulse">
+                    ⚠️ SECURE PROTOCOL TERMINATION ⚠️<br />
+                    CONFIRM SESSION LOGOUT?
+                  </p>
+                  <p className="text-gray-405 text-[10px] leading-relaxed text-center font-sans">
+                    All local encrypted nodes and credentials will be purged immediately.
+                  </p>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => setShowLogoutConfirm(false)}
+                      className="flex-1 py-2 border border-white/10 hover:border-gray-500 rounded-lg font-mono text-xxs text-gray-300 uppercase transition cursor-pointer"
+                    >
+                      CANCEL
+                    </button>
+                    <button
+                      id="confirm-logout-btn"
+                      onClick={handleLogout}
+                      className="flex-1 py-2 bg-[#FF3333] text-white rounded-lg font-mono text-xxs font-bold uppercase hover:bg-red-700 transition cursor-pointer shadow-[0_0_10px_rgba(255,51,51,0.4)]"
+                    >
+                      TERMINATE //
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         </div>

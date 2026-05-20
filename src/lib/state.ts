@@ -158,6 +158,32 @@ export function getAllUsersLocal(): UserProfile[] {
   return Object.values(users);
 }
 
+export function listenAllUsers(onUpdate: (users: UserProfile[]) => void): () => void {
+  if (!isMockFirebase) {
+    const path = "users";
+    const q = query(collection(db, "users"));
+    return onSnapshot(q, (snapshot) => {
+      const users: UserProfile[] = [];
+      snapshot.forEach((doc) => {
+        users.push(doc.data() as UserProfile);
+      });
+      onUpdate(users);
+    }, (error) => {
+      handleFirestoreError(error, OperationType.LIST, path);
+    });
+  } else {
+    const loadAndEmit = () => {
+      onUpdate(getAllUsersLocal());
+    };
+    loadAndEmit();
+    const handleStorageChange = () => loadAndEmit();
+    window.addEventListener("storage_sync_users", handleStorageChange);
+    return () => {
+      window.removeEventListener("storage_sync_users", handleStorageChange);
+    };
+  }
+}
+
 // --- REAL-TIME CHATS LISTENER ---
 export function listenChats(uid: string, onUpdate: (chats: ChatRoom[]) => void): () => void {
   if (!isMockFirebase) {
@@ -405,13 +431,18 @@ export function listenActiveCalls(uid: string, onUpdate: (calls: CallLog[]) => v
     const path = "calls";
     const q = query(
       collection(db, "calls"),
-      where("receiverId", "==", uid),
-      orderBy("timestamp", "desc")
+      where("receiverId", "==", uid)
     );
     return onSnapshot(q, (snapshot) => {
       const logs: CallLog[] = [];
       snapshot.forEach((doc) => {
         logs.push(doc.data() as CallLog);
+      });
+      // Sort client-side by timestamp descending to avoid requiring composite indexes
+      logs.sort((a, b) => {
+        const timeA = a.timestamp ? new Date(a.timestamp).getTime() : 0;
+        const timeB = b.timestamp ? new Date(b.timestamp).getTime() : 0;
+        return timeB - timeA;
       });
       // Only return ringing calls or initiating to trigger phone alert inside iframe
       onUpdate(logs);

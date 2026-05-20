@@ -17,12 +17,21 @@ export function ContactSelector({
 }: ContactSelectorProps) {
   const [search, setSearch] = useState("");
 
+  const normalizePhone = (phoneStr: string) => {
+    return phoneStr.replace(/[^0-9+]/g, "");
+  };
+
   const filtered = contacts.filter(contact => {
     if (contact.uid === currentUserId) return false;
-    return (
-      contact.displayName.toLowerCase().includes(search.toLowerCase()) ||
-      contact.phone.includes(search)
-    );
+    const normSearch = normalizePhone(search);
+    const normPhone = normalizePhone(contact.phone);
+    
+    const matchesName = contact.displayName.toLowerCase().includes(search.toLowerCase());
+    const matchesPhone = normSearch.length > 2 
+      ? normPhone.includes(normSearch) 
+      : contact.phone.toLowerCase().includes(search.toLowerCase());
+      
+    return matchesName || matchesPhone;
   });
 
   return (
@@ -46,7 +55,7 @@ export function ContactSelector({
             type="text"
             value={search}
             onChange={e => setSearch(e.target.value)}
-            placeholder="Search by name or mobile code..."
+            placeholder="Search by name or mobile number..."
             className="w-full bg-[#050505] border border-white/5 rounded-lg py-2.5 pl-9 pr-3 text-xs text-white focus:outline-none focus:border-[#00FF9C] font-mono placeholder-gray-700"
           />
           <Search className="w-4 h-4 text-gray-600 absolute left-3 top-3.5" />
@@ -56,8 +65,19 @@ export function ContactSelector({
       {/* List */}
       <div className="flex-1 overflow-y-auto p-2 bg-[#050505] space-y-1.5">
         {filtered.length === 0 ? (
-          <div className="text-center py-12 text-gray-500 font-mono text-xs">
-            No secure terminals found
+          <div className="text-center py-12 px-6 text-gray-500 font-mono text-xs max-w-sm mx-auto space-y-4">
+            <div className="w-12 h-12 bg-[#0A0A0A] border border-orange-500/30 rounded-full flex items-center justify-center text-orange-450 text-lg mx-auto">
+              📡
+            </div>
+            <p className="text-gray-400 uppercase tracking-wider text-xxs font-bold">Unregistered Destination</p>
+            <p className="normal-case text-gray-500 text-[11px] leading-relaxed">
+              No registered user matches "<span className="text-[#00FF9C] font-semibold">{search}</span>" in our database.
+            </p>
+            <div className="pt-2">
+              <span className="text-[10px] text-[#00D1FF] block bg-[#00D1FF]/5 border border-[#00D1FF]/20 rounded p-2.5 leading-snug">
+                ⚡ Both users must have active accounts linked to Firebase Authentication to initiate chat channels.
+              </span>
+            </div>
           </div>
         ) : (
           filtered.map(contact => {

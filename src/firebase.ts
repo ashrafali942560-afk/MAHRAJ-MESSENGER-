@@ -42,7 +42,7 @@ export interface FirestoreErrorInfo {
 }
 
 // Check if we are using the mock config or the real cloud project
-export const isMockFirebase = firebaseConfig.apiKey.includes("_MOCK_") || firebaseConfig.projectId === "mahraj-messenger";
+export const isMockFirebase = firebaseConfig.apiKey.includes("_MOCK_");
 
 let app;
 if (getApps().length === 0) {
