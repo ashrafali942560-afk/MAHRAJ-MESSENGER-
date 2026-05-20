@@ -1,0 +1,9 @@
+{
+  "apiKey": "AIzaSy_MOCK_KEY_FOR_BUILD_RESILIENCE",
+  "authDomain": "mahraj-messenger.firebaseapp.com",
+  "projectId": "mahraj-messenger",
+  "storageBucket": "mahraj-messenger.appspot.com",
+  "messagingSenderId": "111111111111",
+  "appId": "1:111111111111:web:572df27cc7af4",
+  "firestoreDatabaseId": "(default)"
+}

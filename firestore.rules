@@ -1,0 +1,133 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global default-deny rule
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Reuseable global helpers
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    // Users Collection rules
+    match /users/{userId} {
+      allow get: if isSignedIn() && isValidId(userId);
+      allow list: if isSignedIn(); 
+      allow create: if isSignedIn() && isOwner(userId) && isValidUser(request.resource.data);
+      allow update: if isSignedIn() && isOwner(userId) && isValidUser(request.resource.data)
+                    && request.resource.data.uid == resource.data.uid;
+      allow delete: if false; 
+    }
+
+    function isValidUser(data) {
+      return data.keys().hasAll(['uid', 'displayName', 'phone'])
+        && data.keys().size() <= 8
+        && data.uid is string && data.uid.size() <= 128
+        && data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 100
+        && data.phone is string && data.phone.size() >= 5 && data.phone.size() <= 20
+        && (data.get('bio', '') is string && data.get('bio', '').size() <= 250)
+        && (data.get('photoURL', '') is string && data.get('photoURL', '').size() <= 1000)
+        && (data.get('isOnline', false) is bool)
+        && (data.get('lastSeen', '') is string || data.get('lastSeen', request.time) is timestamp);
+    }
+
+    // Chats Collection rules
+    match /chats/{chatId} {
+      allow get: if isSignedIn() && isValidId(chatId) && isChatParticipant(resource.data);
+      allow list: if isSignedIn(); 
+      allow create: if isSignedIn() && isValidId(chatId) && isValidChat(request.resource.data) && isChatParticipant(request.resource.data);
+      allow update: if isSignedIn() && isValidId(chatId) && isValidChat(request.resource.data) && isChatParticipant(resource.data) && isChatParticipant(request.resource.data);
+      allow delete: if false;
+    }
+
+    function isChatParticipant(chatData) {
+      return request.auth.uid in chatData.participants;
+    }
+
+    function isValidChat(data) {
+      return data.keys().hasAll(['id', 'participants'])
+        && data.keys().size() <= 6
+        && data.id is string && data.id.size() <= 128
+        && data.participants is list && data.participants.size() == 2
+        && data.participants[0] is string && data.participants[1] is string
+        && (data.get('lastMessage', '') is string && data.get('lastMessage', '').size() <= 2000)
+        && (data.get('lastMessageSender', '') is string && data.get('lastMessageSender', '').size() <= 128)
+        && (data.get('lastMessageTime', '') is string || data.get('lastMessageTime', request.time) is timestamp);
+    }
+
+    // Messages Collection rules
+    match /chats/{chatId}/messages/{messageId} {
+      allow get, list: if isSignedIn() && isValidId(chatId) && isValidId(messageId) && isChatParticipantId(chatId);
+      allow create: if isSignedIn() && isValidId(chatId) && isValidId(messageId) && isChatParticipantId(chatId) && isValidMessage(request.resource.data) && request.resource.data.senderId == request.auth.uid;
+      allow update: if isSignedIn() && isValidId(chatId) && isValidId(messageId) && isChatParticipantId(chatId) && isValidMessage(request.resource.data) && request.resource.data.senderId == resource.data.senderId;
+      allow delete: if false;
+    }
+
+    function isChatParticipantId(chatId) {
+      return request.auth.uid in get(/databases/$(database)/documents/chats/$(chatId)).data.participants;
+    }
+
+    function isValidMessage(data) {
+      return data.keys().hasAll(['id', 'senderId', 'text', 'timestamp', 'status'])
+        && data.keys().size() <= 7
+        && data.id is string && data.id.size() <= 128
+        && data.senderId is string && data.senderId.size() <= 128
+        && data.text is string && data.text.size() <= 5000
+        && (data.get('mediaUrl', '') is string && data.get('mediaUrl', '').size() <= 1000)
+        && (data.get('mediaType', '') is string && data.get('mediaType', '').size() <= 50)
+        && (data.timestamp is timestamp || data.timestamp is string)
+        && data.status is string && data.status in ['sent', 'delivered', 'read'];
+    }
+
+    // Status Stories rules
+    match /statuses/{statusId} {
+      allow get, list: if isSignedIn() && isValidId(statusId);
+      allow create: if isSignedIn() && isValidId(statusId) && isValidStatus(request.resource.data) && request.resource.data.userId == request.auth.uid;
+      allow update, delete: if isSignedIn() && isValidId(statusId) && resource.data.userId == request.auth.uid;
+    }
+
+    function isValidStatus(data) {
+      return data.keys().hasAll(['id', 'userId', 'userName', 'timestamp'])
+        && data.keys().size() <= 7
+        && data.id is string && data.id.size() <= 128
+        && data.userId is string && data.userId.size() <= 128
+        && data.userName is string && data.userName.size() <= 100
+        && (data.get('userAvatar', '') is string && data.get('userAvatar', '').size() <= 1000)
+        && (data.get('mediaUrl', '') is string && data.get('mediaUrl', '').size() <= 1000)
+        && (data.get('text', '') is string && data.get('text', '').size() <= 1000)
+        && (data.timestamp is timestamp || data.timestamp is string);
+    }
+
+    // Call Logs rules
+    match /calls/{callId} {
+      allow get, list: if isSignedIn() && isValidId(callId) && (resource.data.callerId == request.auth.uid || resource.data.receiverId == request.auth.uid);
+      allow create: if isSignedIn() && isValidId(callId) && isValidCall(request.resource.data) && (request.resource.data.callerId == request.auth.uid || request.resource.data.receiverId == request.auth.uid);
+      allow update: if isSignedIn() && isValidId(callId) && isValidCall(request.resource.data) && (resource.data.callerId == request.auth.uid || resource.data.receiverId == request.auth.uid);
+      allow delete: if false;
+    }
+
+    function isValidCall(data) {
+      return data.keys().hasAll(['id', 'callerId', 'receiverId', 'type', 'status', 'timestamp'])
+        && data.keys().size() <= 9
+        && data.id is string && data.id.size() <= 128
+        && data.callerId is string && data.callerId.size() <= 128
+        && data.receiverId is string && data.receiverId.size() <= 128
+        && data.type is string && data.type in ['voice', 'video']
+        && data.status is string && data.status in ['missed', 'completed', 'initiated', 'declined']
+        && (data.timestamp is timestamp || data.timestamp is string)
+        && (data.get('callerName', '') is string)
+        && (data.get('receiverName', '') is string)
+        && (data.get('duration', 0) is number);
+    }
+  }
+}

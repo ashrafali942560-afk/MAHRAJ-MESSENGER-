@@ -1,0 +1,101 @@
+{
+  "entities": {
+    "User": {
+      "title": "User Profile",
+      "description": "User account information, status and settings",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "displayName": { "type": "string" },
+        "photoURL": { "type": "string" },
+        "bio": { "type": "string" },
+        "phone": { "type": "string" },
+        "isOnline": { "type": "boolean" },
+        "lastSeen": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "displayName", "phone"]
+    },
+    "Chat": {
+      "title": "Chat Room",
+      "description": "A conversation between two users",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "participants": { "type": "array" },
+        "lastMessage": { "type": "string" },
+        "lastMessageTime": { "type": "string", "format": "date-time" },
+        "lastMessageSender": { "type": "string" }
+      },
+      "required": ["id", "participants"]
+    },
+    "Message": {
+      "title": "Message",
+      "description": "A message sent inside a chat room",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "senderId": { "type": "string" },
+        "text": { "type": "string" },
+        "mediaUrl": { "type": "string" },
+        "mediaType": { "type": "string" },
+        "timestamp": { "type": "string", "format": "date-time" },
+        "status": { "type": "string", "enum": ["sent", "delivered", "read"] }
+      },
+      "required": ["id", "senderId", "text", "timestamp", "status"]
+    },
+    "StatusStory": {
+      "title": "Status Story",
+      "description": "A 24h status post with text or media",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "userName": { "type": "string" },
+        "userAvatar": { "type": "string" },
+        "mediaUrl": { "type": "string" },
+        "text": { "type": "string" },
+        "timestamp": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "userId", "userName", "timestamp"]
+    },
+    "CallLog": {
+      "title": "Call Log",
+      "description": "A voice or video call log entry",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "callerId": { "type": "string" },
+        "receiverId": { "type": "string" },
+        "callerName": { "type": "string" },
+        "receiverName": { "type": "string" },
+        "type": { "type": "string", "enum": ["voice", "video"] },
+        "status": { "type": "string", "enum": ["missed", "completed", "initiated", "declined"] },
+        "timestamp": { "type": "string", "format": "date-time" },
+        "duration": { "type": "number" }
+      },
+      "required": ["id", "callerId", "receiverId", "type", "status", "timestamp"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "Individual users registered on MAHRAJ MESSENGER"
+    },
+    "/chats/{chatId}": {
+      "schema": "Chat",
+      "description": "Chat conversations"
+    },
+    "/chats/{chatId}/messages/{messageId}": {
+      "schema": "Message",
+      "description": "Messages inside a chat room"
+    },
+    "/statuses/{statusId}": {
+      "schema": "StatusStory",
+      "description": "Ephemeral stories"
+    },
+    "/calls/{callId}": {
+      "schema": "CallLog",
+      "description": "History of user video and voice calls"
+    }
+  }
+}
