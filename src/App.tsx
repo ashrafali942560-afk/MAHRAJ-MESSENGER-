@@ -2,9 +2,17 @@ import React, { useState, useEffect } from "react";
 import { 
   MessageSquare, Users, Phone, Settings, LogOut, Terminal, 
   Sparkles, ShieldCheck, HelpCircle, PhoneCall, Plus, ArrowRight,
-  Shield, Edit2, CheckCircle, RefreshCcw, BellRing
+  Shield, Edit2, CheckCircle, RefreshCcw, BellRing, Lock
 } from "lucide-react";
 import { auth, isMockFirebase } from "./firebase";
+import { RecaptchaVerifier, signInWithPhoneNumber, ConfirmationResult } from "firebase/auth";
+
+declare global {
+  interface Window {
+    recaptchaVerifier: any;
+    confirmationResult: any;
+  }
+}
 import { 
   UserProfile, 
   ChatRoom, 
@@ -34,19 +42,26 @@ import { CallScreen } from "./components/CallScreen";
 import { StatusFeed } from "./components/StatusFeed";
 import { ContactSelector } from "./components/ContactSelector";
 import { ChatWindow } from "./components/ChatWindow";
+import { SettingsPanel } from "./components/SettingsPanel";
+import { useTranslation } from "./lib/i18n";
 
 export default function App() {
+  const { t, currentLanguage } = useTranslation();
+  
   // Database status configs
   const [init, setInit] = useState(false);
   const [userId, setUserId] = useState<string | null>(null);
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
   
   // Login inputs
-  const [phone, setPhone] = useState("");
+  const [phone, setPhone] = useState("+91 ");
   const [otpSent, setOtpSent] = useState(false);
   const [otpCode, setOtpCode] = useState("");
   const [generatedOtp, setGeneratedOtp] = useState("");
   const [otpNotification, setOtpNotification] = useState<string | null>(null);
+  const [confirmationResult, setConfirmationResult] = useState<ConfirmationResult | null>(null);
+  const [forceMockMode, setForceMockMode] = useState(false);
+  const [systemBanner, setSystemBanner] = useState<{ title: string; message: string; type: "error" | "warning" | "success" } | null>(null);
   
   // Registration Profile Setup inputs
   const [onboarding, setOnboarding] = useState(false);
@@ -70,22 +85,21 @@ export default function App() {
   const [showContacts, setShowContacts] = useState(false);
   const [showDevHub, setShowDevHub] = useState(false);
   const [showProfileSettings, setShowProfileSettings] = useState(false);
-  const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
 
-  // Avatar presets for quick profiling
+  // Avatar presets
   const AVATAR_PRESETS = [
-    "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?auto=format&fit=crop&q=80&w=150", // neon green mesh
-    "https://images.unsplash.com/photo-1549490349-8643362247b5?auto=format&fit=crop&q=80&w=150", // purple wireframe
-    "https://images.unsplash.com/photo-1563089145-599997674d42?auto=format&fit=crop&q=80&w=150", // cyber neon art
-    "https://images.unsplash.com/photo-1550745165-9bc0b252726f?auto=format&fit=crop&q=80&w=150"  // old computers
+    "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?auto=format&fit=crop&q=80&w=150", 
+    "https://images.unsplash.com/photo-1549490349-8643362247b5?auto=format&fit=crop&q=80&w=150", 
+    "https://images.unsplash.com/photo-1563089145-599997674d42?auto=format&fit=crop&q=80&w=150", 
+    "https://images.unsplash.com/photo-1550745165-9bc0b252726f?auto=format&fit=crop&q=80&w=150"  
   ];
 
-  // Initialize DB and auth listen at startup
+  // Initialize DB and auth persistent session
   useEffect(() => {
     initializeLocalDatabase();
     setAllUsers(getAllUsersLocal());
 
-    // Check if user credentials persistent
+    // Check persistent active log
     const storedUser = getActiveLocalUser();
     if (storedUser) {
       setUserId(storedUser.uid);
@@ -94,29 +108,28 @@ export default function App() {
     setInit(true);
   }, []);
 
-  // Sync state loops based on active terminal UID
+  // Sync state loops of live Firestore users, channels, calls, statuses
   useEffect(() => {
     if (!userId) return;
 
-    // Real-time listener to available registered users
+    // Users
     const unsubscribeUsers = listenAllUsers((updatedUsers) => {
       setAllUsers(updatedUsers);
     });
 
-    // List Chats synced
+    // Chats
     const unsubscribeChats = listenChats(userId, (updatedRooms) => {
       setChats(updatedRooms);
     });
 
-    // List stories statuses
+    // Status feeds
     const unsubscribeStatuses = listenStatuses((updatedStatuses) => {
       setStatuses(updatedStatuses);
     });
 
-    // List Active incoming/ringing calls
+    // Active ringing signaling events
     const unsubscribeCalls = listenActiveCalls(userId, (updatedCalls) => {
       setCalls(updatedCalls);
-      // If there is an active incoming ringing call not declined/missed, lift up call overlay!
       const activeRinging = updatedCalls.find(
         call => call.status === "ringing" && call.receiverId === userId
       );
@@ -133,7 +146,7 @@ export default function App() {
     };
   }, [userId]);
 
-  // Sync individual room messages if activeChatId changes
+  // Messages syncing loop per active conversation
   useEffect(() => {
     if (!activeChatId) return;
 
@@ -149,55 +162,239 @@ export default function App() {
     };
   }, [activeChatId]);
 
-  // --- PHONE AUTH STEP HANDLERS (SIMULATION OVERLAY) ---
-  const handleRequestOtp = (e: React.FormEvent) => {
+  // OTP triggers
+  const handleRequestOtp = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!phone.match(/^\+?[0-9\s-]{10,15}$/)) {
-      alert("Please enter a valid phone number (example: +91 99999 11111)");
+    setSystemBanner(null);
+
+    if (!phone.trim()) {
+      setSystemBanner({
+        title: "Input Required",
+        message: "Please enter a valid phone number (example: +91 99999 11111)",
+        type: "warning"
+      });
       return;
     }
 
-    // Generate random 6-digit confirmation code
-    const mockCode = Math.floor(100000 + Math.random() * 900000).toString();
-    setGeneratedOtp(mockCode);
-    setOtpSent(true);
+    // Clean space delimiters
+    let rawPhone = phone.trim().replace(/[\s-]/g, "");
+    if (!rawPhone.startsWith("+")) {
+      if (rawPhone.startsWith("91") && rawPhone.length >= 12) {
+        rawPhone = "+" + rawPhone;
+      } else {
+        rawPhone = "+91" + rawPhone;
+      }
+    }
+    let formattedPhone = rawPhone;
 
-    // Present beautiful custom SMS notification overlay inside iframe workspace
-    setTimeout(() => {
-      setOtpNotification(`[SMS_GATEWAY] MAHRAJ Verification PIN is: ${mockCode}`);
-    }, 1200);
+    if (formattedPhone.length < 11) {
+      setSystemBanner({
+        title: "Invalid Number",
+        message: "Phone number is too short! Format correctly: e.g. +91 99999 11111",
+        type: "warning"
+      });
+      return;
+    }
+
+    if (!formattedPhone.match(/^\+[0-9]{10,15}$/)) {
+      setSystemBanner({
+        title: "Invalid Format",
+        message: "Invalid country structure. Format carefully: e.g. +919999911111",
+        type: "warning"
+      });
+      return;
+    }
+
+    if (isMockFirebase || forceMockMode) {
+      const mockCode = Math.floor(100000 + Math.random() * 900000).toString();
+      setGeneratedOtp(mockCode);
+      setOtpSent(true);
+      setTimeout(() => {
+        setOtpNotification(`[SMS_GATEWAY] MAHRAJ Verification PIN is: ${mockCode}`);
+      }, 1200);
+      return;
+    }
+
+    try {
+      setOtpNotification("[SYS] Initializing secure Recaptcha session...");
+
+      let containerElement = document.getElementById('recaptcha-container');
+      if (!containerElement) {
+        containerElement = document.createElement('div');
+        containerElement.id = 'recaptcha-container';
+        containerElement.style.position = 'absolute';
+        containerElement.style.opacity = '0';
+        containerElement.style.pointerEvents = 'none';
+        containerElement.style.width = '1px';
+        containerElement.style.height = '1px';
+        containerElement.style.overflow = 'hidden';
+        document.body.appendChild(containerElement);
+      }
+
+      if (!window.recaptchaVerifier) {
+        containerElement.innerHTML = ''; 
+        window.recaptchaVerifier = new RecaptchaVerifier(auth, containerElement, {
+          size: 'invisible',
+          callback: () => {
+            console.log("[MAHRAJ Auth] Invisible reCAPTCHA evaluated.");
+          }
+        });
+      }
+
+      console.log("[MAHRAJ Auth] Dispatching SMS payload to:", formattedPhone);
+      const result = await signInWithPhoneNumber(auth, formattedPhone, window.recaptchaVerifier);
+      setConfirmationResult(result);
+      window.confirmationResult = result;
+      setOtpSent(true);
+      setOtpNotification(`[SMS_GATEWAY] Real Firebase OTP pin sent to ${formattedPhone}`);
+      
+      setTimeout(() => setOtpNotification(null), 7000);
+    } catch (error: any) {
+      console.error("Firebase Phone Auth Error:", error);
+      
+      const errorMsg = error.message || String(error);
+      const isBillingDisabled = 
+        errorMsg.toLowerCase().includes("billing-not-enabled") || 
+        errorMsg.toLowerCase().includes("billing") ||
+        errorMsg.toLowerCase().includes("quota") ||
+        errorMsg.toLowerCase().includes("limit") ||
+        (error.code && (
+          error.code.includes("billing-not-enabled") || 
+          error.code.includes("quota-exceeded")
+        ));
+      const isTooShort = errorMsg.toUpperCase().includes("TOO_SHORT");
+      const isInvalidOrShort = errorMsg.includes("invalid-phone-number") || isTooShort;
+
+      if (isBillingDisabled) {
+        setForceMockMode(true);
+        setSystemBanner({
+          title: "Simulation Autoplay Bypass",
+          message: "The Firebase project's SMS thresholds have been reached. Your companion has automatically activated the sandbox SMS overlay pin generator below.",
+          type: "warning"
+        });
+        
+        const mockCode = Math.floor(100000 + Math.random() * 900000).toString();
+        setGeneratedOtp(mockCode);
+        setOtpSent(true);
+        setTimeout(() => {
+          setOtpNotification(`[SMS_GATEWAY] MAHRAJ Verification PIN is: ${mockCode}`);
+        }, 1200);
+        return;
+      } else if (isInvalidOrShort) {
+        setSystemBanner({
+          title: "Number Format Block",
+          message: "The specified phone number is too short or invalid. Ensure you append your country code (e.g. +91 99999 11111).",
+          type: "error"
+        });
+      } else {
+        setSystemBanner({
+          title: "Connection Alert",
+          message: `SMS Dispatch failed: ${errorMsg}. Sandbox bypass can be triggered manually in DEV HUB.`,
+          type: "error"
+        });
+      }
+      setOtpNotification(null);
+      
+      if (window.recaptchaVerifier) {
+        try {
+          const v = window.recaptchaVerifier;
+          window.recaptchaVerifier = null;
+          v.clear();
+        } catch (e) {
+          console.warn("Recaptcha error cleanup warn:", e);
+        }
+      }
+    }
   };
 
-  const handleVerifyOtp = (e: React.FormEvent) => {
+  const handleVerifyOtp = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (otpCode !== generatedOtp) {
-      alert("Invalid OTP code. In phone auth fallback simulation, please refer to the green alert banner!");
+    setSystemBanner(null);
+
+    if (!otpCode.trim() || otpCode.length !== 6) {
+      setSystemBanner({
+        title: "Validation Defect",
+        message: "Please specify a complete 6-digit verification code.",
+        type: "warning"
+      });
       return;
     }
 
-    // Auth succeeded! Generate local session UID
-    const generatedUid = "user_" + phone.replace(/[^0-9]/g, "");
-    setOtpNotification(null);
-
-    // Fetch profile
-    getUserProfile(generatedUid).then(existingProfile => {
-      if (existingProfile) {
-        setUserProfile(existingProfile);
-        setActiveLocalUser(existingProfile);
-        setUserId(generatedUid);
-      } else {
-        // Needs onboarding setup
-        setRegName("");
-        setRegBio("Available on MAHRAJ MESSENGER 🟢");
-        setRegAvatar(AVATAR_PRESETS[0]);
-        setOnboarding(true);
-        setUserId(generatedUid);
+    if (isMockFirebase || forceMockMode) {
+      if (otpCode !== generatedOtp) {
+        setSystemBanner({
+          title: "Verification Fail",
+          message: "Invalid OTP code. In phone auth fallback simulation, please refer to the green alert banner!",
+          type: "error"
+        });
+        return;
       }
-    });
+
+      const generatedUid = "user_" + phone.replace(/[^0-9]/g, "");
+      setOtpNotification(null);
+
+      getUserProfile(generatedUid).then(existingProfile => {
+        if (existingProfile) {
+          setUserProfile(existingProfile);
+          setActiveLocalUser(existingProfile);
+          setUserId(generatedUid);
+        } else {
+          setRegName("");
+          setRegBio("Available on MAHRAJ MESSENGER 🟢");
+          setRegAvatar(AVATAR_PRESETS[0]);
+          setOnboarding(true);
+          setUserId(generatedUid);
+        }
+      });
+      return;
+    }
+
+    const activeConfirm = confirmationResult || window.confirmationResult;
+    if (!activeConfirm) {
+      setSystemBanner({
+        title: "Session Expired",
+        message: "Verification session expired. Please request a new security code.",
+        type: "error"
+      });
+      setOtpSent(false);
+      return;
+    }
+
+    try {
+      setOtpNotification("[SYS] Decrypting confirmation handshake...");
+      const credential = await activeConfirm.confirm(otpCode);
+      const firebaseUser = credential.user;
+
+      if (firebaseUser) {
+        const uid = firebaseUser.uid;
+        setOtpNotification(null);
+
+        getUserProfile(uid).then(existingProfile => {
+          if (existingProfile) {
+            setUserProfile(existingProfile);
+            setActiveLocalUser(existingProfile);
+            setUserId(uid);
+          } else {
+            setRegName("");
+            setRegBio("Available on MAHRAJ MESSENGER 🟢");
+            setRegAvatar(AVATAR_PRESETS[0]);
+            setOnboarding(true);
+            setUserId(uid);
+          }
+        });
+      }
+    } catch (error: any) {
+      console.error("Firebase Code Verification Error:", error);
+      setSystemBanner({
+        title: "Handshake Error",
+        message: `Cryptographic PIN verify failed: ${error.message || error}`,
+        type: "error"
+      });
+      setOtpNotification(null);
+    }
   };
 
   const handleGoogleInstantSync = () => {
-    // Elegant instant bypass for fast sandbox prototyping
     const demoUid = "user_demo_cohost";
     const demoProfile: UserProfile = {
       uid: demoUid,
@@ -240,11 +437,9 @@ export default function App() {
     setOtpSent(false);
     setOtpCode("");
     setActiveChatId(null);
-    setShowLogoutConfirm(false);
     setShowProfileSettings(false);
   };
 
-  // --- ACTIONS: START NEW CHATS & MAKE SIMULATED LIVE CALLS ---
   const handleStartChatWithContact = async (contactUid: string) => {
     if (!userId) return;
     const roomKey = await createChat(userId, contactUid);
@@ -255,7 +450,6 @@ export default function App() {
   const handleStartCall = async (type: "voice" | "video") => {
     if (!userId || !activeChatId || !userProfile) return;
     
-    // Determine target call receiver which is the other participant in room
     const chatRoom = chats.find(c => c.id === activeChatId);
     if (!chatRoom) return;
 
@@ -298,7 +492,6 @@ export default function App() {
     updateCallStatus(activeCall.id, "completed", sessionDuration);
     setActiveCall(null);
 
-    // Save call log to local call history
     const allLogs = getActiveLocalUser() ? JSON.parse(localStorage.getItem("mahraj_messenger_calls") || "[]") : [];
     const completeCall = {
       ...activeCall,
@@ -307,15 +500,6 @@ export default function App() {
       timestamp: new Date().toISOString()
     };
     localStorage.setItem("mahraj_messenger_calls", JSON.stringify([completeCall, ...allLogs]));
-  };
-
-  // Profile detail updates
-  const handleUpdateProfileBio = async (newBio: string) => {
-    if (!userProfile) return;
-    const updated = { ...userProfile, bio: newBio };
-    await saveUserProfile(updated);
-    setUserProfile(updated);
-    setActiveLocalUser(updated);
   };
 
   const formatMsgDate = (isoString: string) => {
@@ -327,7 +511,6 @@ export default function App() {
     }
   };
 
-  // Standard loading block till local auth values checked
   if (!init) {
     return (
       <div className="min-h-screen bg-[#050505] flex items-center justify-center font-mono text-xs text-[#00FF9C]">
@@ -336,7 +519,7 @@ export default function App() {
     );
   }
 
-  // --- VIEW: LOGIN SCREENS (PHONE / OTP SETUP FLOW) ---
+  // --- WELCOME/AUTHENTICATION LOGIN FLOWS (SUPPORT TRANSLATION) ---
   if (!userId || !userProfile || onboarding) {
     if (userId && !userProfile && !onboarding) {
       return (
@@ -347,8 +530,8 @@ export default function App() {
     }
     return (
       <div className="min-h-screen bg-[#050505] flex flex-col justify-center items-center px-4 py-8 font-sans transition-all duration-300">
+        <div id="recaptcha-container" style={{ position: 'absolute', opacity: 0, pointerEvents: 'none', width: '1px', height: '1px', overflow: 'hidden' }}></div>
         
-        {/* SMS Received Neon Notification popover popup */}
         {otpNotification && (
           <div id="sms-popover" className="fixed top-4 left-4 right-4 z-50 bg-[#0A0A0A] border-l-4 border-[#00FF9C] p-4 rounded-lg shadow-[0_10px_30px_rgba(0,0,0,0.9)] animate-bounce flex items-center justify-between border border-[#00FF9C]/20">
             <div className="flex items-center gap-3">
@@ -361,34 +544,45 @@ export default function App() {
             <button 
               onClick={() => {
                 setOtpNotification(null);
-                // Auto-inject OTP code into input for convenience inside fast test loops
                 setOtpCode(generatedOtp);
               }} 
-              className="text-xxs font-mono bg-[#00FF9C]/10 hover:bg-[#00FF9C]/20 text-[#00FF9C] border border-[#00FF9C]/30 rounded px-2.5 py-1.5 transition"
+              className="text-xxs font-mono bg-[#00FF9C]/10 hover:bg-[#00FF9C]/20 text-[#00FF9C] border border-[#00FF9C]/30 rounded px-2.5 py-1.5 transition cursor-pointer"
             >
-              AUTO // COPIED
+              AUTO FILL
             </button>
           </div>
         )}
 
         <div className="w-full max-w-sm bg-[#0A0A0A] border-2 border-[#00FF9C]/30 rounded-3xl overflow-hidden shadow-[0_0_40px_rgba(0,255,156,0.15)] p-6">
           
-          {/* Logo Heading and branding */}
-          <div className="text-center mb-8">
+          <div className="text-center mb-6">
             <div className="inline-flex p-3 rounded-full bg-[#00FF9C]/10 mb-3 border border-[#00FF9C]/20">
               <MessageSquare className="w-10 h-10 text-[#00FF9C] animate-pulse" />
             </div>
-            <h1 className="text-3xl font-extrabold tracking-widest font-sans text-white uppercase">MAHRAJ</h1>
-            <p className="text-[#00FF9C] text-xxs tracking-widest font-mono uppercase mt-1">Neon Black Messenger</p>
+            <h1 className="text-3xl font-extrabold tracking-widest font-sans text-white uppercase">{t("welcome")}</h1>
+            <p className="text-[#00FF9C] text-xxs tracking-wider font-mono uppercase mt-1">{t("tagline")}</p>
           </div>
 
-          {/* Conditional view: Setup profile picture or type username */}
+          {systemBanner && (
+            <div id="welcome-system-banner" className="mb-4 p-3.5 bg-yellow-950/20 border border-yellow-500/25 rounded-2xl text-[11px] leading-relaxed text-gray-300 relative animate-in fade-in duration-300">
+              <span className="font-mono text-[9px] text-yellow-400 font-bold tracking-widest uppercase block animate-pulse mb-1">
+                ⚠️ {systemBanner.title}
+              </span>
+              <span>{systemBanner.message}</span>
+              <button 
+                onClick={() => setSystemBanner(null)} 
+                className="absolute top-1.5 right-2 px-1 text-gray-500 hover:text-white font-mono text-xs cursor-pointer select-none"
+              >
+                ×
+              </button>
+            </div>
+          )}
+
           {onboarding ? (
-            <form onSubmit={handleRegisterProfile} className="space-y-5">
+            <form onSubmit={handleRegisterProfile} className="space-y-4">
               <div className="text-center">
-                <span className="text-xxs font-mono text-[#00FF9C] tracking-widest uppercase block mb-3">Onboarding // Set Profile Metadata</span>
+                <span className="text-xxs font-mono text-[#00FF9C] tracking-widest uppercase block mb-3">{t("onboarding_title")}</span>
                 
-                {/* Select Preset Avatars */}
                 <div className="flex justify-center gap-3 mb-4">
                   {AVATAR_PRESETS.map((preset, idx) => (
                     <button
@@ -396,7 +590,7 @@ export default function App() {
                       type="button"
                       onClick={() => setRegAvatar(preset)}
                       className={`relative w-12 h-12 rounded-full overflow-hidden border-2 transition ${
-                        regAvatar === preset ? "border-[#00FF9C] scale-105 shadow-[0_0_10px_rgba(0,255,156,0.4)]" : "border-gray-800"
+                        regAvatar === preset ? "border-[#00FF9C] scale-105 shadow-[0_0_10px_rgba(0,255,156,0.4)]" : "border-gray-850"
                       }`}
                     >
                       <img src={preset} alt="Preset avatar" className="w-full h-full object-cover" />
@@ -406,7 +600,7 @@ export default function App() {
               </div>
 
               <div>
-                <label className="block text-xxs font-mono uppercase text-gray-500 mb-1">Your Full Name</label>
+                <label className="block text-xxs font-mono uppercase text-gray-500 mb-1">{t("onboarding_name")}</label>
                 <input
                   id="reg-name-input"
                   type="text"
@@ -419,42 +613,36 @@ export default function App() {
               </div>
 
               <div>
-                <label className="block text-xxs font-mono uppercase text-gray-500 mb-1">Status Biography</label>
+                <label className="block text-xxs font-mono uppercase text-gray-500 mb-1">{t("onboarding_bio")}</label>
                 <input
                   id="reg-bio-input"
                   type="text"
                   value={regBio}
                   onChange={e => setRegBio(e.target.value)}
-                  placeholder="e.g. Flutter Developer Companion..."
-                  className="w-full bg-[#050505] border border-white/5 focus:border-[#00FF9C] rounded-xl p-3 text-xs text-white focus:outline-none"
+                  placeholder="e.g. Developer..."
+                  className="w-full bg-[#050505] border border-white/5 focus:border-[#00FF9C] rounded-xl p-3 text-xs text-white focus:outline-none block"
                 />
               </div>
 
               <button
                 id="register-profile-btn"
                 type="submit"
-                className="w-full bg-[#00FF9C] hover:bg-[#00FF9C]/90 text-black py-3 rounded-xl font-mono font-bold tracking-widest uppercase transition-all duration-200"
+                className="w-full bg-[#00FF9C] hover:bg-[#00FF9C]/90 text-black py-3 rounded-xl font-mono font-bold tracking-widest uppercase transition-all duration-200 cursor-pointer"
               >
-                COMPILE MODULE // GO
+                {t("onboarding_btn")} // GO
               </button>
             </form>
           ) : !otpSent ? (
-            <form onSubmit={handleRequestOtp} className="space-y-5">
-              <div className="p-3 bg-[#050505] border border-[#00FF9C]/10 rounded-xl mb-4 text-center">
-                <p className="text-gray-405 text-xxs leading-relaxed">
-                  Enter your mobile parameters to generate a zero-trust OTP session on MAHRAJ servers.
-                </p>
-              </div>
-
+            <form onSubmit={handleRequestOtp} className="space-y-4">
               <div>
-                <label className="block text-xxs font-mono uppercase text-gray-500 mb-1">Phone Number</label>
+                <label className="block text-xxs font-mono uppercase text-gray-500 mb-1">{t("phone_input_label")}</label>
                 <input
                   id="phone-login-input"
                   type="tel"
                   required
                   value={phone}
                   onChange={e => setPhone(e.target.value)}
-                  placeholder="+91 91111 88888"
+                  placeholder={t("phone_placeholder")}
                   className="w-full bg-[#050505] border border-white/5 focus:border-[#00FF9C] rounded-xl p-3 text-xs text-white focus:outline-none font-mono text-center tracking-widest text-[#00FF9C]"
                 />
               </div>
@@ -462,14 +650,14 @@ export default function App() {
               <button
                 id="phone-request-otp-btn"
                 type="submit"
-                className="w-full bg-[#00FF9C] hover:bg-[#00FF9C]/90 text-black py-3 rounded-xl font-mono font-bold tracking-widest uppercase transition duration-200"
+                className="w-full bg-[#00FF9C] hover:bg-[#00FF9C]/90 text-black py-3 rounded-xl font-mono font-bold tracking-widest uppercase transition duration-200 cursor-pointer"
               >
-                REQUEST SECURITY PIN
+                {t("request_otp_btn")}
               </button>
 
               <div className="flex items-center justify-between pt-2">
                 <span className="h-[1px] bg-white/5 flex-1" />
-                <span className="text-[10px] font-mono text-gray-600 px-3 uppercase">OR FAST SYNC</span>
+                <span className="text-[10px] font-mono text-gray-650 px-3 uppercase">OR FAST SYNC</span>
                 <span className="h-[1px] bg-white/5 flex-1" />
               </div>
 
@@ -477,21 +665,21 @@ export default function App() {
                 id="fast-sync-google-btn"
                 type="button"
                 onClick={handleGoogleInstantSync}
-                className="w-full border border-[#00FF9C]/40 hover:bg-[#00FF9C]/10 text-[#00FF9C] py-2.5 rounded-xl font-mono text-xxs tracking-wider uppercase transition"
+                className="w-full border border-[#00FF9C]/40 hover:bg-[#00FF9C]/10 text-[#00FF9C] py-2.5 rounded-xl font-mono text-xxs tracking-wider uppercase transition cursor-pointer"
               >
                 ⚡ Instant sync (Dev Bypass)
               </button>
             </form>
           ) : (
-            <form onSubmit={handleVerifyOtp} className="space-y-5">
+            <form onSubmit={handleVerifyOtp} className="space-y-4">
               <div className="p-3 bg-lime-950/20 border border-lime-400/20 rounded-xl text-center">
                 <p className="text-lime-400 text-xxs font-mono">
-                  Verification OTP dispatched to {phone}
+                  OTP dispatched to {phone}
                 </p>
               </div>
 
               <div>
-                <label className="block text-xxs font-mono uppercase text-gray-500 mb-1">6-Digit Verification PIN</label>
+                <label className="block text-xxs font-mono uppercase text-gray-500 mb-1">{t("enter_otp_label")}</label>
                 <input
                   id="phone-verify-otp-input"
                   type="text"
@@ -508,16 +696,16 @@ export default function App() {
                 <button
                   type="button"
                   onClick={() => setOtpSent(false)}
-                  className="flex-1 border border-white/5 hover:border-gray-500 py-3 rounded-xl text-xs font-mono text-gray-400 transition"
+                  className="flex-1 border border-white/5 hover:border-gray-500 py-3 rounded-xl text-xs font-mono text-gray-400 transition cursor-pointer"
                 >
-                  EDIT PHONE
+                  {t("change_phone")}
                 </button>
                 <button
                   id="phone-validate-otp-btn"
                   type="submit"
-                  className="flex-1 bg-[#00FF9C] hover:bg-[#00FF9C]/90 text-black py-3 rounded-xl font-mono font-bold tracking-wide uppercase transition"
+                  className="flex-1 bg-[#00FF9C] hover:bg-[#00FF9C]/90 text-black py-3 rounded-xl font-mono font-bold tracking-wide uppercase transition cursor-pointer"
                 >
-                  VERIFY PIN //
+                  {t("validate_otp_btn")}
                 </button>
               </div>
             </form>
@@ -528,40 +716,31 @@ export default function App() {
     );
   }
 
-  // --- CHAT WINDOW VIEW OVERLAY ---
-  if (activeChatId) {
+  // --- RESOLVE BUDDY CHAT WINDOW CONTENT (DETERMINE SELECTED CHAT DATA) ---
+  const getBuddyProfile = () => {
+    if (!activeChatId) return null;
     const room = chats.find(c => c.id === activeChatId);
     const otherParticipantUid = room?.participants.find(p => p !== userId);
-    
-    // If we're fallback matching bot or demo contact
-    const buddyProfile = otherParticipantUid === "ai-bot" 
+    return otherParticipantUid === "ai-bot" 
       ? STARTER_USERS["ai-bot"] 
       : allUsers.find(u => u.uid === otherParticipantUid) || {
           uid: otherParticipantUid || "fallback-id",
-          displayName: "Secure Buddy",
+          displayName: "Secure Terminal",
           photoURL: "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&q=80&w=200",
-          bio: "Securing MAHRAJ messenger connection...",
+          bio: "Securing mesh node connection...",
           phone: "+91 00000 00000",
           isOnline: true
         };
+  };
 
-    return (
-      <ChatWindow
-        chatId={activeChatId}
-        senderProfile={userProfile}
-        receiverProfile={buddyProfile}
-        messages={messages[activeChatId] || []}
-        onBack={() => setActiveChatId(null)}
-        onInitiateCall={handleStartCall}
-      />
-    );
-  }
+  const buddyProfile = getBuddyProfile();
 
-  // --- VIEWS: ROOT COMPONENT AND CORE PORTALS ---
+  // --- MAIN LAYOUT CONSOLE -- BENTO ADAPTIVE DUAL SPLIT INTERFACE ---
   return (
-    <div className="min-h-screen bg-[#050505] text-[#C5C6C7] flex flex-col font-sans transition-all duration-300">
+    <div className="min-h-screen bg-[#050505] text-[#C5C6C7] flex flex-col font-sans transition-all duration-300 relative">
+      <div id="recaptcha-container" style={{ position: 'absolute', opacity: 0, pointerEvents: 'none', width: '1px', height: '1px', overflow: 'hidden' }}></div>
       
-      {/* Active Call Alert Overlay Screen */}
+      {/* Incoming Ringing Voice/Video Signal overlay */}
       {activeCall && (
         <CallScreen
           callId={activeCall.id}
@@ -579,323 +758,294 @@ export default function App() {
         <DevHub onClose={() => setShowDevHub(false)} />
       )}
 
-      {/* Standard Header bar */}
-      <header className="bg-[#0A0A0A] border-b border-[#00FF9C]/20 px-4 py-4 flex items-center justify-between z-10 shadow-[0_4px_20px_rgba(0,255,156,0.03)]">
-        <div className="flex items-center gap-2.5">
-          <MessageSquare className="w-5 h-5 text-[#00FF9C] animate-pulse" />
-          <h1 className="text-lg font-extrabold tracking-wider text-white font-sans uppercase">MAHRAJ</h1>
-        </div>
-
-        {/* Toolbar keys */}
-        <div className="flex items-center gap-3">
-          <button
-            id="open-devhub-btn"
-            onClick={() => setShowDevHub(true)}
-            title="Flutter Developer Blueprints Hub"
-            className="flex items-center gap-1.5 px-3 py-1.5 bg-[#00FF9C]/10 border border-[#00FF9C]/30 hover:border-[#00FF9C] rounded-md text-[#00FF9C] font-mono text-xxs transition duration-150 shadow-[0_0_10px_rgba(0,255,156,0.05)] animate-pulse"
-          >
-            <Terminal className="w-3.5 h-3.5" /> FLUTTER DEV HUB
-          </button>
-
-          <button
-            id="open-profile-btn"
-            onClick={() => setShowProfileSettings(true)}
-            className="w-8.5 h-8.5 rounded-full overflow-hidden border border-gray-850 hover:border-[#00FF9C] transition"
-          >
-            <img src={userProfile?.photoURL || AVATAR_PRESETS[0]} alt="Me" className="w-full h-full object-cover" />
-          </button>
-        </div>
-      </header>
-
-      {/* Profile Settings Drawer Overlay Screen */}
+      {/* Modern Profile Settings Panel Component */}
       {showProfileSettings && (
-        <div id="settings-overlay" className="fixed inset-0 z-30 bg-[#050505]/95 flex items-center justify-center p-4">
-          <div className="w-full max-w-sm bg-[#080808] border-2 border-[#00FF9C]/40 rounded-2xl p-5 shadow-[0_0_20px_rgba(0,255,156,0.3)]">
-            <div className="flex justify-between items-center border-b border-white/5 pb-2 mb-4">
-              <h3 className="text-[#00FF9C] text-xs font-bold tracking-wider uppercase font-mono">My Profile Settings</h3>
+        <SettingsPanel
+          userProfile={userProfile}
+          onClose={() => setShowProfileSettings(false)}
+          onUpdateProfile={(updated) => {
+            setUserProfile(updated);
+            setActiveLocalUser(updated);
+          }}
+          onLogout={handleLogout}
+          avatarPresets={AVATAR_PRESETS}
+          forceMockMode={forceMockMode}
+          onSetForceMockMode={setForceMockMode}
+        />
+      )}
+
+      {/* Dual Bento Grid Wrapper Layout */}
+      <div className="flex-1 flex max-w-7xl w-full mx-auto overflow-hidden relative self-stretch h-[100vh]">
+        
+        {/* SIDEBAR BLOCK: Left area. Visible always on wide viewports, hidden on mobile screens if a conversation is open */}
+        <div className={`w-full md:w-[380px] md:border-r md:border-white/5 flex flex-col h-full bg-[#050505] transition-all ${
+          activeChatId ? "hidden md:flex" : "flex"
+        }`}>
+          
+          {/* Header Bar */}
+          <header className="p-4 bg-[#0A0A0A] border-b border-[#00FF9C]/10 flex items-center justify-between shadow-[0_4px_15px_rgba(0,0,0,0.5)]">
+            <div className="flex items-center gap-2">
+              <MessageSquare className="w-5 h-5 text-[#00FF9C]" />
+              <h1 className="text-md font-extrabold tracking-widest text-white uppercase">{t("app_title")}</h1>
+            </div>
+
+            <div className="flex items-center gap-3">
               <button 
-                onClick={() => { setShowProfileSettings(false); setShowLogoutConfirm(false); }} 
-                className="text-gray-500 hover:text-white font-mono text-xs cursor-pointer transition"
+                onClick={() => setShowDevHub(true)}
+                className="p-1 px-2 border border-[#00FF9C]/30 hover:border-[#00FF9C] rounded text-[#00FF9C] text-[9px] font-mono tracking-widest uppercase transition duration-150 animate-pulse cursor-pointer"
               >
-                // Close
+                DEV HUB
+              </button>
+              
+              <button
+                onClick={() => setShowProfileSettings(true)}
+                className="w-8 h-8 rounded-full overflow-hidden border border-[#00FF9C]/40 hover:border-[#00FF9C] transition cursor-pointer"
+                title="System settings"
+              >
+                <img src={userProfile?.photoURL || AVATAR_PRESETS[0]} alt="Me" className="w-full h-full object-cover" />
               </button>
             </div>
+          </header>
 
-            <div className="flex flex-col items-center text-center space-y-4">
-              <div className="w-20 h-20 rounded-full overflow-hidden border-2 border-[#00FF9C] shadow-lg relative">
-                <img src={userProfile?.photoURL || AVATAR_PRESETS[0]} alt="Profile Avatar" className="w-full h-full object-cover" />
-              </div>
+          {/* Navigation Tab Toggles */}
+          <div className="bg-[#0A0A0A] border-b border-white/5 flex font-mono text-xxs uppercase tracking-wider text-center font-bold z-10 select-none">
+            <button
+              onClick={() => setNavTab("chats")}
+              className={`flex-1 py-3.5 border-b-2 transition cursor-pointer ${
+                navTab === "chats" ? "border-[#00FF9C] text-[#00FF9C]" : "border-transparent text-gray-500 hover:text-gray-300"
+              }`}
+            >
+              {t("chats_tab")} ({chats.length})
+            </button>
+            <button
+              onClick={() => setNavTab("status")}
+              className={`flex-1 py-3.5 border-b-2 transition cursor-pointer ${
+                navTab === "status" ? "border-[#00FF9C] text-[#00FF9C]" : "border-transparent text-gray-500 hover:text-gray-300"
+              }`}
+            >
+              {t("status_tab")} ({statuses.length})
+            </button>
+            <button
+              onClick={() => setNavTab("calls")}
+              className={`flex-1 py-3.5 border-b-2 transition cursor-pointer ${
+                navTab === "calls" ? "border-[#00FF9C] text-[#00FF9C]" : "border-transparent text-gray-500 hover:text-gray-300"
+              }`}
+            >
+              {t("calls_tab")}
+            </button>
+          </div>
 
-              <div>
-                <h4 className="text-white text-sm font-bold tracking-wider">{userProfile?.displayName || "User"}</h4>
-                <p className="text-[#00FF9C] text-xxs font-mono">{userProfile?.phone || ""}</p>
-              </div>
-
-              <div className="w-full font-sans">
-                <label className="block text-left text-[10px] font-mono text-gray-500 uppercase mb-1">Status Quote / Bio</label>
-                <input
-                  id="settings-bio-input"
-                  type="text"
-                  defaultValue={userProfile?.bio || ""}
-                  onBlur={e => handleUpdateProfileBio(e.target.value)}
-                  className="w-full bg-[#050505] border border-white/5 rounded-lg p-2.5 text-xs text-white text-center focus:outline-none focus:border-[#00FF9C]"
-                />
-                <span className="text-[9px] text-gray-650 font-mono text-center block mt-1">Changes are saved to database on input blur</span>
-              </div>
-
-              {!showLogoutConfirm ? (
-                <div className="pt-4 w-full border-t border-white/10 flex flex-col gap-2">
-                  <button
-                    id="logout-btn"
-                    onClick={() => setShowLogoutConfirm(true)}
-                    className="w-full py-3 bg-red-500/10 hover:bg-red-500/20 text-[#FF3333] border-2 border-[#FF3333] rounded-xl font-mono text-xs font-bold tracking-widest uppercase transition-all duration-300 shadow-[0_0_15px_rgba(255,51,51,0.25)] flex items-center justify-center gap-2 cursor-pointer"
-                  >
-                    <LogOut className="w-4 h-4" /> TERMINATE SESSION / LOGOUT
-                  </button>
-                  <button
-                    onClick={() => setShowProfileSettings(false)}
-                    className="w-full py-2 bg-transparent hover:bg-white/5 rounded-xl text-xxs font-mono text-gray-400 hover:text-white transition duration-150 uppercase tracking-widest"
-                  >
-                    RETURN TO CONSOLE
-                  </button>
-                </div>
-              ) : (
-                <div className="pt-4 w-full border-t border-[#FF3333]/20 bg-[#120505]/40 p-3.5 rounded-xl border border-[#FF3333]/30 flex flex-col gap-3">
-                  <p className="text-[#FF3333] text-xxs font-mono font-bold tracking-wider uppercase text-center animate-pulse">
-                    ⚠️ SECURE PROTOCOL TERMINATION ⚠️<br />
-                    CONFIRM SESSION LOGOUT?
-                  </p>
-                  <p className="text-gray-405 text-[10px] leading-relaxed text-center font-sans">
-                    All local encrypted nodes and credentials will be purged immediately.
-                  </p>
-                  <div className="flex gap-2">
+          {/* Content Lists */}
+          <main className="flex-1 overflow-y-auto py-3 bg-[#050505]">
+            
+            {/* Tab 1: CHATS VIEW PANEL */}
+            {navTab === "chats" && (
+              <div id="chats-tab-view" className="px-3 space-y-2">
+                {chats.length === 0 ? (
+                  <div className="text-center py-20 text-gray-500 font-mono text-[11px] max-w-xs mx-auto space-y-4">
+                    <div className="w-12 h-12 rounded-full border border-white/5 bg-[#0A0A0A] flex items-center justify-center mx-auto text-lg animate-bounce">
+                      ✨
+                    </div>
+                    <p>No secure chats active. Launch code connection now!</p>
                     <button
-                      onClick={() => setShowLogoutConfirm(false)}
-                      className="flex-1 py-2 border border-white/10 hover:border-gray-500 rounded-lg font-mono text-xxs text-gray-300 uppercase transition cursor-pointer"
+                      onClick={() => setShowContacts(true)}
+                      className="px-3 py-1.5 border border-[#00FF9C]/40 hover:border-[#00FF9C] rounded font-mono text-xxs text-[#00FF9C] bg-[#00FF9C]/5 transition cursor-pointer uppercase tracking-widest"
                     >
-                      CANCEL
-                    </button>
-                    <button
-                      id="confirm-logout-btn"
-                      onClick={handleLogout}
-                      className="flex-1 py-2 bg-[#FF3333] text-white rounded-lg font-mono text-xxs font-bold uppercase hover:bg-red-700 transition cursor-pointer shadow-[0_0_10px_rgba(255,51,51,0.4)]"
-                    >
-                      TERMINATE //
+                      INITIALIZE NEW PAYLOAD
                     </button>
                   </div>
+                ) : (
+                  chats.map((room) => {
+                    const otherUid = room.participants.find(p => p !== userId);
+                    const isBot = otherUid === "ai-bot";
+                    
+                    const profileObj = isBot 
+                      ? STARTER_USERS["ai-bot"] 
+                      : allUsers.find(u => u.uid === otherUid) || {
+                          uid: otherUid || "fallback-id",
+                          displayName: "Secure Client Node",
+                          photoURL: "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&q=80&w=200",
+                          bio: "Encrypted node",
+                          phone: "+91 00000 00000",
+                          isOnline: false
+                        };
+
+                    const roomMsgs = messages[room.id] || [];
+                    const unreadCount = roomMsgs.filter(m => m.senderId !== userId && m.status !== "read").length;
+
+                    return (
+                      <div
+                        id={`chat-room-item-${room.id}`}
+                        key={room.id}
+                        onClick={() => setActiveChatId(room.id)}
+                        className={`p-3 rounded-2xl border cursor-pointer flex items-center justify-between transition ${
+                          activeChatId === room.id 
+                            ? "bg-[#101F1A]/80 border-[#00FF9C]/40 text-white" 
+                            : "bg-[#0A0A0A] border-white/5 hover:border-[#00FF9C]/20 hover:bg-[#0A0A0A]/60"
+                        }`}
+                      >
+                        <div className="flex items-center gap-3">
+                          <div className="relative">
+                            <img src={profileObj.photoURL} alt="Avatar" className="w-10 h-10 rounded-full object-cover border border-[#050505]" />
+                            {profileObj.isOnline && (
+                              <span className="absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full bg-[#00FF9C] border-2 border-[#0A0A0A] animate-pulse" />
+                            )}
+                          </div>
+                          <div className="max-w-[190px]">
+                            <h4 className="text-xs font-semibold text-white tracking-wide flex items-center gap-1.5 uppercase truncate">
+                              {profileObj.displayName}
+                              {isBot && (
+                                <span className="bg-[#00FF9C]/15 text-[#00FF9C] text-[8px] font-mono border border-[#00FF9C]/30 rounded px-1.5">AI</span>
+                              )}
+                            </h4>
+                            <p className="text-gray-400 text-[11px] font-sans truncate mt-0.5" title={room.lastMessage}>
+                              {room.lastMessageSender === userId ? "You: " : ""}{room.lastMessage}
+                            </p>
+                          </div>
+                        </div>
+
+                        <div className="flex flex-col items-end gap-1 font-mono text-right shrink-0">
+                          <span className="text-[9px] text-[#00D1FF]">{room.lastMessageTime ? formatMsgDate(room.lastMessageTime) : ""}</span>
+                          {unreadCount > 0 && (
+                            <span className="w-4 h-4 bg-[#00FF9C] text-black rounded-full text-[9px] font-bold flex items-center justify-center shadow-[0_0_8px_rgba(0,255,156,0.5)]">
+                              {unreadCount}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            )}
+
+            {/* Tab 2: METADATA STATUS STORIES FEED */}
+            {navTab === "status" && (
+              <StatusFeed
+                statuses={statuses}
+                currentUserId={userId || ""}
+                currentUserName={userProfile?.displayName || "User"}
+                currentUserAvatar={userProfile?.photoURL || AVATAR_PRESETS[0]}
+              />
+            )}
+
+            {/* Tab 3: PHONE VOICE & VIDEO CALL HISTORY LOGGER */}
+            {navTab === "calls" && (
+              <div id="calls-tab-view" className="px-3 space-y-2">
+                <div className="flex items-center justify-between border-b border-[#00FF9C]/10 pb-1 font-mono text-[9px] tracking-widest text-[#00FF9C] uppercase">
+                  <span>TRANSMISSION WORK LOGS</span>
                 </div>
-              )}
-            </div>
-          </div>
+
+                {(() => {
+                  const staticCallLogs = [
+                    {
+                      id: "call-demo-1",
+                      callerId: "syed-sahab",
+                      receiverId: userId || "",
+                      callerName: "Syed Ashraf (CEO)",
+                      receiverName: userProfile?.displayName || "User",
+                      type: "video" as const,
+                      status: "missed" as const,
+                      timestamp: new Date(Date.now() - 7200000).toISOString()
+                    },
+                    {
+                      id: "call-demo-2",
+                      callerId: userId || "",
+                      receiverId: "ai-bot",
+                      callerName: userProfile?.displayName || "User",
+                      receiverName: "MAHRAJ AI Engine",
+                      type: "voice" as const,
+                      status: "completed" as const,
+                      duration: 182,
+                      timestamp: new Date(Date.now() - 14400000).toISOString()
+                    }
+                  ];
+
+                  return staticCallLogs.map((log) => {
+                    const isMissed = log.status === "missed";
+                    const isOther = log.callerId !== userId;
+                    return (
+                      <div
+                        id={`call-log-item-${log.id}`}
+                        key={log.id}
+                        className="bg-[#0A0A0A] p-3 rounded-2xl border border-white/5 hover:border-[#00FF9C]/10 transition flex items-center justify-between"
+                      >
+                        <div className="flex items-center gap-3">
+                          <div className="w-10 h-10 rounded-full border border-white/5 bg-gray-950/40 flex items-center justify-center">
+                            <PhoneCall className={`w-4 h-4 ${isMissed ? "text-red-500 animate-pulse" : "text-[#00FF9C]"}`} />
+                          </div>
+                          <div>
+                            <h4 className="text-white text-xs font-semibold">
+                              {isOther ? log.callerName : log.receiverName}
+                            </h4>
+                            <p className="text-gray-400 text-xxs font-mono uppercase mt-0.5 flex items-center gap-1">
+                              <span className={isMissed ? "text-red-500" : "text-lime-500"}>
+                                {isMissed ? "MISSED" : "COMPLETED"}
+                              </span>
+                              {log.duration ? `• ${Math.floor(log.duration / 60)}m ${log.duration % 60}s` : ""}
+                            </p>
+                          </div>
+                        </div>
+
+                        <span className="text-[9px] text-gray-500 font-mono shrink-0">{formatMsgDate(log.timestamp)}</span>
+                      </div>
+                    );
+                  });
+                })()}
+              </div>
+            )}
+
+          </main>
+
+          {/* Floating Action Button for Contact Selector triggers */}
+          {navTab === "chats" && (
+            <button
+              id="fab-contacts-trigger"
+              onClick={() => setShowContacts(true)}
+              className="absolute bottom-6 right-6 md:right-auto md:left-[300px] z-20 w-14 h-14 bg-[#00FF9C] hover:bg-[#00D1FF] rounded-2xl shadow-[0_4px_15px_rgba(0,255,156,0.35)] flex items-center justify-center text-black hover:scale-105 cursor-pointer transition transform duration-200"
+              title={t("search_contacts")}
+            >
+              <Plus className="w-6 h-6 text-black font-bold" />
+            </button>
+          )}
+
         </div>
-      )}
 
-      {/* Floating Action Button for chats search */}
-      {navTab === "chats" && (
-        <button
-          id="fab-contacts-trigger"
-          onClick={() => setShowContacts(true)}
-          className="fixed bottom-6 right-6 z-20 w-14 h-14 bg-[#00FF9C] hover:bg-[#00D1FF] rounded-xl shadow-[0_4px_15px_rgba(0,255,156,0.3)] flex items-center justify-center text-black cursor-pointer transition transform duration-200 hover:scale-105"
-        >
-          <Plus className="w-7 h-7 text-black font-bold" />
-        </button>
-      )}
+        {/* MESSAGING PANE: Right area. Side by side panel on desktop, overlay fullscreen on mobile */}
+        <div className={`flex-1 h-full flex flex-col bg-[#050505] transition-all ${
+          activeChatId ? "flex" : "hidden md:flex items-center justify-center border-l border-white/5"
+        }`}>
+          
+          {activeChatId && buddyProfile ? (
+            <ChatWindow
+              chatId={activeChatId}
+              senderProfile={userProfile}
+              receiverProfile={buddyProfile}
+              messages={messages[activeChatId] || []}
+              onBack={() => setActiveChatId(null)}
+              onInitiateCall={handleStartCall}
+            />
+          ) : (
+            <div className="p-8 text-center max-w-sm space-y-5 flex flex-col items-center">
+              <div className="w-16 h-16 rounded-full border border-white/5 bg-[#0C0C0C] flex items-center justify-center text-gray-650 shadow-md">
+                <Lock className="w-6 h-6 text-gray-500" />
+              </div>
+              <div className="space-y-1 text-center">
+                <h3 className="text-white text-xs font-bold font-mono uppercase tracking-widest">MAHRAJ MESSENGER SECURE EDGE</h3>
+                <p className="text-gray-550 text-[11px] leading-relaxed font-sans">{t("no_chat_selected")}</p>
+              </div>
+              <div className="text-[9px] font-mono text-gray-600 bg-black-950 p-2 border border-white/5 rounded-lg flex items-center gap-1.5 uppercase tracking-wide">
+                <ShieldCheck className="w-3.5 h-3.5 text-[#00FF9C]" />
+                End-to-End Cryptography Enabled
+              </div>
+            </div>
+          )}
 
-      {/* Top Tabs (Chats, Status/Stories, Calls) */}
-      <div className="bg-[#0A0A0A] border-b border-white/5 flex font-mono text-xxs uppercase tracking-wider text-center font-bold z-10">
-        <button
-          id="tab-chats-btn"
-          onClick={() => setNavTab("chats")}
-          className={`flex-1 py-3 border-b-2 transition ${
-            navTab === "chats" ? "border-[#00FF9C] text-[#00FF9C]" : "border-transparent text-gray-500 hover:text-gray-300"
-          }`}
-        >
-          Chats ({chats.length})
-        </button>
-        <button
-          id="tab-status-btn"
-          onClick={() => setNavTab("status")}
-          className={`flex-1 py-3 border-b-2 transition ${
-            navTab === "status" ? "border-[#00FF9C] text-[#00FF9C]" : "border-transparent text-gray-500 hover:text-gray-300"
-          }`}
-        >
-          Status ({statuses.length})
-        </button>
-        <button
-          id="tab-calls-btn"
-          onClick={() => setNavTab("calls")}
-          className={`flex-1 py-3 border-b-2 transition ${
-            navTab === "calls" ? "border-[#00FF9C] text-[#00FF9C]" : "border-transparent text-gray-500 hover:text-gray-300"
-          }`}
-        >
-          Live Calls
-        </button>
+        </div>
+
       </div>
 
-      {/* View router depending on standard tab selected */}
-      <main className="flex-1 bg-[#050505] py-1.5">
-        
-        {/* TAB 1: CHATS VIEW */}
-        {navTab === "chats" && (
-          <div id="chats-tab-view" className="px-3.5 space-y-1.5">
-            {chats.length === 0 ? (
-              <div className="text-center py-24 text-gray-500 font-mono text-xs max-w-xs mx-auto space-y-4">
-                <div className="w-14 h-14 rounded-full border border-white/5 bg-[#0A0A0A] flex items-center justify-center mx-auto text-xl animate-bounce">
-                  ⚡
-                </div>
-                <p>No compiled terminal channels. Press the glowing green launch key below to spark a chat thread!</p>
-                <button
-                  onClick={() => setShowContacts(true)}
-                  className="px-3 py-1.5 border border-[#00FF9C]/40 hover:border-[#00FF9C] rounded font-mono text-xxs text-[#00FF9C] bg-[#00FF9C]/5 hover:bg-[#00FF9C]/10 transition"
-                >
-                  START SECURE CHANNEL // +
-                </button>
-              </div>
-            ) : (
-              chats.map((room) => {
-                const otherUid = room.participants.find(p => p !== userId);
-                const isBot = otherUid === "ai-bot";
-                
-                // fallback matching profiles
-                const profileObj = isBot 
-                  ? STARTER_USERS["ai-bot"] 
-                  : allUsers.find(u => u.uid === otherUid) || {
-                      uid: otherUid || "fallback-id",
-                      displayName: "Secure Terminal",
-                      photoURL: "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&q=80&w=200",
-                      bio: "Secured mesh node",
-                      phone: "+91 00000 00000",
-                      isOnline: false
-                    };
-
-                // Find unread message counts in cache
-                const roomMsgs = messages[room.id] || [];
-                const unreadCount = roomMsgs.filter(m => m.senderId !== userId && m.status !== "read").length;
-
-                return (
-                  <div
-                    id={`chat-room-item-${room.id}`}
-                    key={room.id}
-                    onClick={() => setActiveChatId(room.id)}
-                    className="bg-[#0A0A0A] p-3 rounded-xl border border-white/5 hover:border-[#00FF9C]/30 hover:bg-[#0A0A0A]/50 cursor-pointer flex items-center justify-between transition hover:shadow-md"
-                  >
-                    <div className="flex items-center gap-3.5">
-                      <div className="relative">
-                        <img src={profileObj.photoURL} alt="Avatar" className="w-11 h-11 rounded-full object-cover border border-[#050505]" />
-                        {profileObj.isOnline && (
-                          <span className="absolute bottom-0 right-0 w-3 h-3 rounded-full bg-[#00FF9C] border-2 border-[#0A0A0A] animate-pulse" />
-                        )}
-                      </div>
-                      <div>
-                        <h4 className="text-xs font-semibold text-white tracking-wide flex items-center gap-1.5 uppercase">
-                          {profileObj.displayName}
-                          {isBot && (
-                            <span className="bg-[#00FF9C]/15 text-[#00FF9C] text-[8px] font-mono border border-[#00FF9C]/30 rounded px-1.5">AI</span>
-                          )}
-                        </h4>
-                        <p className="text-gray-400 text-xxs font-sans max-w-[190px] truncate mt-0.5" title={room.lastMessage}>
-                          {room.lastMessageSender === userId ? "You: " : ""}{room.lastMessage}
-                        </p>
-                      </div>
-                    </div>
-
-                    <div className="flex flex-col items-end gap-1 font-mono">
-                      <span className="text-[9px] text-[#00D1FF]">{room.lastMessageTime ? formatMsgDate(room.lastMessageTime) : ""}</span>
-                      {unreadCount > 0 && (
-                        <span className="w-4.5 h-4.5 bg-[#00FF9C] text-black rounded-full text-[9px] font-bold flex items-center justify-center shadow-[0_0_8px_rgba(0,255,156,0.5)]">
-                          {unreadCount}
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                );
-              })
-            )}
-          </div>
-        )}
-
-        {/* TAB 2: METADATA STATUS STORIES FEED */}
-        {navTab === "status" && (
-          <StatusFeed
-            statuses={statuses}
-            currentUserId={userId || ""}
-            currentUserName={userProfile?.displayName || "User"}
-            currentUserAvatar={userProfile?.photoURL || AVATAR_PRESETS[0]}
-          />
-        )}
-
-        {/* TAB 3: PHONE VOICE & VIDEO CALL LOGGER */}
-        {navTab === "calls" && (
-          <div id="calls-tab-view" className="px-3.5 space-y-1.5 font-sans">
-            <div className="flex items-center justify-between border-b border-[#00FF9C]/10 pb-1.5 mb-3 font-mono text-xxs tracking-widest text-[#00FF9C] uppercase">
-              <span>TRANSMISSION HISTORY (LOGS)</span>
-            </div>
-
-            {/* Simulated Calls cache check */}
-            {(() => {
-              const staticCallLogs = [
-                {
-                  id: "call-demo-1",
-                  callerId: "syed-sahab",
-                  receiverId: userId || "",
-                  callerName: "Syed Ashraf (CEO)",
-                  receiverName: userProfile?.displayName || "User",
-                  type: "video" as const,
-                  status: "missed" as const,
-                  timestamp: new Date(Date.now() - 7200000).toISOString()
-                },
-                {
-                  id: "call-demo-2",
-                  callerId: userId || "",
-                  receiverId: "ai-bot",
-                  callerName: userProfile?.displayName || "User",
-                  receiverName: "MAHRAJ AI Engine",
-                  type: "voice" as const,
-                  status: "completed" as const,
-                  duration: 182,
-                  timestamp: new Date(Date.now() - 14400000).toISOString()
-                }
-              ];
-
-              return staticCallLogs.map((log) => {
-                const isMissed = log.status === "missed";
-                const isOther = log.callerId !== userId;
-                return (
-                  <div
-                    id={`call-log-item-${log.id}`}
-                    key={log.id}
-                    className="bg-[#0A0A0A] p-3 rounded-xl border border-white/5 hover:border-[#00FF9C]/15 transition flex items-center justify-between"
-                  >
-                    <div className="flex items-center gap-3.5">
-                      <div className="w-10 h-10 rounded-full border border-white/5 bg-gray-950/40 flex items-center justify-center">
-                        <PhoneCall className={`w-4 h-4 ${isMissed ? "text-red-500 animate-pulse" : "text-[#00FF9C]"}`} />
-                      </div>
-                      <div>
-                        <h4 className="text-white text-xs font-semibold tracking-wide">
-                          {isOther ? log.callerName : log.receiverName}
-                        </h4>
-                        <p className="text-gray-400 text-xxs font-mono mt-0.5 uppercase flex items-center gap-1">
-                          <span className={isMissed ? "text-red-500" : "text-lime-500"}>
-                            {isMissed ? "MISSED ATTEMPT" : "COMPLETED WORK"}
-                          </span>
-                          {log.duration ? `• ${Math.floor(log.duration / 60)}m ${log.duration % 60}s` : ""}
-                        </p>
-                      </div>
-                    </div>
-
-                    <div className="flex items-center gap-2 font-mono text-right text-xxs text-gray-500">
-                      <span>{formatMsgDate(log.timestamp)}</span>
-                    </div>
-                  </div>
-                );
-              });
-            })()}
-          </div>
-        )}
-
-      </main>
-
-      {/* Contacts selection modal overlay */}
+      {/* Contacts selectors */}
       {showContacts && (
         <ContactSelector
           contacts={allUsers}

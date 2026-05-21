@@ -1,6 +1,6 @@
 {
   "name": "Mahraj Messenger",
   "description": "An immersive, secure real-time messaging application with live calls and cross-platform native specifications.",
-  "requestFramePermissions": [],
+  "requestFramePermissions": ["camera", "microphone"],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

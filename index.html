@@ -6,6 +6,8 @@
     <title>My Google AI Studio App</title>
   </head>
   <body>
+    <!-- Persistent invisible container for webview-compliant Firebase Phone reCAPTCHA verification -->
+    <div id="recaptcha-container" style="position: absolute; opacity: 0; pointer-events: none; width: 1px; height: 1px; overflow: hidden;"></div>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
