@@ -8,6 +8,7 @@ import {
 import { 
   UserProfile, 
   ChatRoom, 
+  GroupRoom,
   Message, 
   StatusStory, 
   CallLog 
@@ -260,16 +261,35 @@ export async function createChat(uid1: string, uid2: string): Promise<string> {
 
 // --- REAL-TIME MESSAGES LISTENER ---
 export function listenMessages(chatId: string, onUpdate: (messages: Message[]) => void): () => void {
+  if (chatId.startsWith("group_")) {
+    return listenGroupMessages(chatId, onUpdate);
+  }
   if (!isMockFirebase) {
-    const path = `chats/${chatId}/messages`;
+    const path = "messages";
     const q = query(
-      collection(db, "chats", chatId, "messages"),
-      orderBy("timestamp", "asc")
+      collection(db, "messages"),
+      where("chatId", "==", chatId)
     );
     return onSnapshot(q, (snapshot) => {
       const messages: Message[] = [];
       snapshot.forEach((doc) => {
-        messages.push(doc.data() as Message);
+        const data = doc.data();
+        // Fallback text to messageText if text is missing, handle timestamp formats
+        messages.push({
+          id: data.id || doc.id,
+          senderId: data.senderId,
+          text: data.text || data.messageText || "",
+          mediaUrl: data.mediaUrl,
+          mediaType: data.mediaType || data.messageType,
+          timestamp: data.timestamp,
+          status: data.status || "sent"
+        });
+      });
+      // Sort client-side securely to bypass composite index constraints
+      messages.sort((a, b) => {
+        const timeA = a.timestamp ? new Date(a.timestamp).getTime() : 0;
+        const timeB = b.timestamp ? new Date(b.timestamp).getTime() : 0;
+        return timeA - timeB;
       });
       onUpdate(messages);
     }, (error) => {
@@ -290,7 +310,7 @@ export function listenMessages(chatId: string, onUpdate: (messages: Message[]) =
   }
 }
 
-// Send Message
+// Send Message (One-to-One Chat)
 export async function sendMessage(
   chatId: string, 
   senderId: string, 
@@ -298,9 +318,13 @@ export async function sendMessage(
   mediaUrl?: string, 
   mediaType?: "image" | "video"
 ): Promise<void> {
+  if (chatId.startsWith("group_")) {
+    return sendGroupMessage(chatId, senderId, text, mediaUrl, mediaType);
+  }
   const timestamp = new Date().toISOString();
   const id = "msg_" + Date.now() + "_" + Math.random().toString(36).substring(2, 6);
-  
+  const receiverId = chatId.split("_").find(uid => uid !== senderId) || "";
+
   const newMessage: Message = {
     id,
     senderId,
@@ -312,17 +336,33 @@ export async function sendMessage(
   };
 
   if (!isMockFirebase) {
-    const pathMessage = `chats/${chatId}/messages/${id}`;
+    const pathMessage = `messages/${id}`;
     const pathChat = `chats/${chatId}`;
     try {
-      // Add message
-      await setDoc(doc(db, "chats", chatId, "messages", id), newMessage);
-      // Update last message
-      await updateDoc(doc(db, "chats", chatId), {
+      // Store inside the root messages collection as requested
+      await setDoc(doc(db, "messages", id), {
+        id,
+        senderId,
+        receiverId,
+        messageText: text,
+        text, // keep for UI compatibility
+        timestamp,
+        messageType: mediaUrl ? "image" : "text",
+        mediaType: mediaUrl ? "image" : "text", // keep for UI compatibility
+        mediaUrl,
+        chatId,
+        status: "sent"
+      });
+
+      // Update the chat entry for recent conversation preview
+      await setDoc(doc(db, "chats", chatId), {
+        id: chatId,
+        participants: chatId.split("_"),
         lastMessage: mediaUrl ? (mediaType === "image" ? "🖼️ Image" : "🎥 Video") : text,
         lastMessageSender: senderId,
         lastMessageTime: timestamp
-      });
+      }, { merge: true });
+
     } catch (e) {
       handleFirestoreError(e, OperationType.WRITE, pathMessage);
     }
@@ -344,6 +384,220 @@ export async function sendMessage(
       chats[chatIndex].lastMessageSender = senderId;
       chats[chatIndex].lastMessageTime = timestamp;
       setLocal("chats", chats);
+    } else {
+      chats.push({
+        id: chatId,
+        participants: chatId.split("_"),
+        lastMessage: mediaUrl ? (mediaType === "image" ? "🖼️ Image" : "🎥 Video") : text,
+        lastMessageSender: senderId,
+        lastMessageTime: timestamp
+      });
+      setLocal("chats", chats);
+    }
+  }
+}
+
+// --- GROUP CHAT SPECIFIC OPERATIONS ---
+
+// 1. Create a group in Firestore groups collection
+export async function createGroup(name: string, members: string[], creatorId: string): Promise<string> {
+  const groupId = "group_" + Date.now() + "_" + Math.random().toString(36).substring(2, 6);
+  const avatar = `https://images.unsplash.com/photo-1582213782179-e0d53f98f2ca?auto=format&fit=crop&q=80&w=200`; // elegant group avatar
+  const timestamp = new Date().toISOString();
+
+  const newGroup: GroupRoom = {
+    id: groupId,
+    name,
+    members,
+    creatorId,
+    avatar,
+    lastMessage: `${name} group created`,
+    lastMessageSender: creatorId,
+    lastMessageTime: timestamp
+  };
+
+  if (!isMockFirebase) {
+    const path = `groups/${groupId}`;
+    try {
+      await setDoc(doc(db, "groups", groupId), newGroup);
+      
+      // Seed a starter system message in subcollection matching instructions
+      const systemMsgId = "msg_seed_" + Date.now();
+      await setDoc(doc(db, "groups", groupId, "messages", systemMsgId), {
+        id: systemMsgId,
+        senderId: "system",
+        text: `Welcome to ${name}! Secure messaging session started.`,
+        messageText: `Welcome to ${name}! Secure messaging session started.`,
+        timestamp,
+        messageType: "text",
+        status: "sent"
+      });
+      
+    } catch (e) {
+      handleFirestoreError(e, OperationType.WRITE, path);
+    }
+  } else {
+    const groups = getLocal<GroupRoom[]>("groups", []);
+    groups.push(newGroup);
+    setLocal("groups", groups);
+
+    // Seed a starter local message
+    const allGroupMsgs = getLocal<Record<string, Message[]>>("group_messages", {});
+    allGroupMsgs[groupId] = [{
+      id: "msg_seed_" + Date.now(),
+      senderId: "system",
+      text: `Welcome to ${name}! Secure messaging session started.`,
+      timestamp,
+      status: "sent"
+    }];
+    setLocal("group_messages", allGroupMsgs);
+  }
+
+  return groupId;
+}
+
+// 2. Listen to active groups for current user
+export function listenGroups(uid: string, onUpdate: (groups: GroupRoom[]) => void): () => void {
+  if (!isMockFirebase) {
+    const path = "groups";
+    const q = query(
+      collection(db, "groups"),
+      where("members", "array-contains", uid)
+    );
+    return onSnapshot(q, (snapshot) => {
+      const groupRooms: GroupRoom[] = [];
+      snapshot.forEach((doc) => {
+        groupRooms.push(doc.data() as GroupRoom);
+      });
+      onUpdate(groupRooms);
+    }, (error) => {
+      handleFirestoreError(error, OperationType.LIST, path);
+    });
+  } else {
+    const loadAndEmit = () => {
+      const allGroups = getLocal<GroupRoom[]>("groups", []);
+      const userGroups = allGroups.filter(g => g.members.includes(uid));
+      onUpdate(userGroups);
+    };
+
+    loadAndEmit();
+    const handleStorageChange = () => loadAndEmit();
+    window.addEventListener("storage_sync_groups", handleStorageChange);
+    return () => {
+      window.removeEventListener("storage_sync_groups", handleStorageChange);
+    };
+  }
+}
+
+// 3. Listen to messages inside a specific group (subcollection list)
+export function listenGroupMessages(groupId: string, onUpdate: (messages: Message[]) => void): () => void {
+  if (!isMockFirebase) {
+    const path = `groups/${groupId}/messages`;
+    // We listen to the subcollection
+    const q = query(
+      collection(db, "groups", groupId, "messages")
+    );
+    return onSnapshot(q, (snapshot) => {
+      const messages: Message[] = [];
+      snapshot.forEach((doc) => {
+        const data = doc.data();
+        messages.push({
+          id: data.id || doc.id,
+          senderId: data.senderId,
+          text: data.text || data.messageText || "",
+          mediaUrl: data.mediaUrl,
+          mediaType: data.mediaType || data.messageType,
+          timestamp: data.timestamp,
+          status: data.status || "sent"
+        });
+      });
+      // Client-side sort safely to prevent composite indices requirement
+      messages.sort((a, b) => {
+        const timeA = a.timestamp ? new Date(a.timestamp).getTime() : 0;
+        const timeB = b.timestamp ? new Date(b.timestamp).getTime() : 0;
+        return timeA - timeB;
+      });
+      onUpdate(messages);
+    }, (error) => {
+      handleFirestoreError(error, OperationType.LIST, path);
+    });
+  } else {
+    const loadAndEmit = () => {
+      const allGroupMsgs = getLocal<Record<string, Message[]>>("group_messages", {});
+      onUpdate(allGroupMsgs[groupId] || []);
+    };
+
+    loadAndEmit();
+    const handleStorageChange = () => loadAndEmit();
+    window.addEventListener(`storage_sync_group_messages_${groupId}`, handleStorageChange);
+    return () => {
+      window.removeEventListener(`storage_sync_group_messages_${groupId}`, handleStorageChange);
+    };
+  }
+}
+
+// 4. Send Message inside group’s sub-collection
+export async function sendGroupMessage(
+  groupId: string,
+  senderId: string,
+  text: string,
+  mediaUrl?: string,
+  mediaType?: "image" | "video"
+): Promise<void> {
+  const timestamp = new Date().toISOString();
+  const id = "msg_" + Date.now() + "_" + Math.random().toString(36).substring(2, 6);
+
+  const newMessage: Message = {
+    id,
+    senderId,
+    text,
+    mediaUrl,
+    mediaType,
+    timestamp,
+    status: "sent"
+  };
+
+  if (!isMockFirebase) {
+    const pathMessage = `groups/${groupId}/messages/${id}`;
+    try {
+      // 1. Save directly into sub-collection groups/{groupId}/messages
+      await setDoc(doc(db, "groups", groupId, "messages", id), {
+        id,
+        senderId,
+        text,
+        messageText: text,
+        mediaUrl,
+        mediaType: mediaUrl ? "image" : "text",
+        messageType: mediaUrl ? "image" : "text",
+        timestamp,
+        status: "sent"
+      });
+
+      // 2. Update parent document state for reactive preview listing
+      await updateDoc(doc(db, "groups", groupId), {
+        lastMessage: mediaUrl ? (mediaType === "image" ? "🖼️ Image" : "🎥 Video") : text,
+        lastMessageSender: senderId,
+        lastMessageTime: timestamp
+      });
+
+    } catch (e) {
+      handleFirestoreError(e, OperationType.WRITE, pathMessage);
+    }
+  } else {
+    const allGroupMsgs = getLocal<Record<string, Message[]>>("group_messages", {});
+    if (!allGroupMsgs[groupId]) allGroupMsgs[groupId] = [];
+    allGroupMsgs[groupId].push(newMessage);
+    setLocal("group_messages", allGroupMsgs);
+
+    window.dispatchEvent(new Event(`storage_sync_group_messages_${groupId}`));
+
+    const groups = getLocal<GroupRoom[]>("groups", []);
+    const groupIdx = groups.findIndex(g => g.id === groupId);
+    if (groupIdx !== -1) {
+      groups[groupIdx].lastMessage = mediaUrl ? (mediaType === "image" ? "🖼️ Image" : "🎥 Video") : text;
+      groups[groupIdx].lastMessageSender = senderId;
+      groups[groupIdx].lastMessageTime = timestamp;
+      setLocal("groups", groups);
     }
   }
 }

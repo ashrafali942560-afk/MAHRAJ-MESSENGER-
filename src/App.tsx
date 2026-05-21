@@ -2,7 +2,7 @@ import React, { useState, useEffect } from "react";
 import { 
   MessageSquare, Users, Phone, Settings, LogOut, Terminal, 
   Sparkles, ShieldCheck, HelpCircle, PhoneCall, Plus, ArrowRight,
-  Shield, Edit2, CheckCircle, RefreshCcw, BellRing, Lock
+  Shield, Edit2, CheckCircle, RefreshCcw, BellRing, Lock, Check
 } from "lucide-react";
 import { auth, isMockFirebase } from "./firebase";
 import { RecaptchaVerifier, signInWithPhoneNumber, ConfirmationResult } from "firebase/auth";
@@ -16,6 +16,7 @@ declare global {
 import { 
   UserProfile, 
   ChatRoom, 
+  GroupRoom,
   Message, 
   StatusStory, 
   CallLog 
@@ -35,7 +36,9 @@ import {
   listenActiveCalls,
   initiateCall,
   updateCallStatus,
-  STARTER_USERS
+  STARTER_USERS,
+  listenGroups,
+  createGroup
 } from "./lib/state";
 import { DevHub } from "./components/DevHub";
 import { CallScreen } from "./components/CallScreen";
@@ -75,9 +78,17 @@ export default function App() {
   // Models states synced in real-time
   const [allUsers, setAllUsers] = useState<UserProfile[]>([]);
   const [chats, setChats] = useState<ChatRoom[]>([]);
+  const [groups, setGroups] = useState<GroupRoom[]>([]);
   const [messages, setMessages] = useState<Record<string, Message[]>>({});
   const [statuses, setStatuses] = useState<StatusStory[]>([]);
   const [calls, setCalls] = useState<CallLog[]>([]);
+
+  // Group UI & view state variables
+  const [activeChatType, setActiveChatType] = useState<"private" | "group">("private");
+  const [chatTab, setChatTab] = useState<"private" | "group">("private");
+  const [showCreateGroupModal, setShowCreateGroupModal] = useState(false);
+  const [newGroupName, setNewGroupName] = useState("");
+  const [selectedGroupMembers, setSelectedGroupMembers] = useState<string[]>([]);
 
   // Active overlay interfaces
   const [activeChatId, setActiveChatId] = useState<string | null>(null);
@@ -122,6 +133,11 @@ export default function App() {
       setChats(updatedRooms);
     });
 
+    // Groups
+    const unsubscribeGroups = listenGroups(userId, (updatedGroups) => {
+      setGroups(updatedGroups);
+    });
+
     // Status feeds
     const unsubscribeStatuses = listenStatuses((updatedStatuses) => {
       setStatuses(updatedStatuses);
@@ -141,6 +157,7 @@ export default function App() {
     return () => {
       unsubscribeUsers();
       unsubscribeChats();
+      unsubscribeGroups();
       unsubscribeStatuses();
       unsubscribeCalls();
     };
@@ -665,9 +682,18 @@ export default function App() {
                 id="fast-sync-google-btn"
                 type="button"
                 onClick={handleGoogleInstantSync}
-                className="w-full border border-[#00FF9C]/40 hover:bg-[#00FF9C]/10 text-[#00FF9C] py-2.5 rounded-xl font-mono text-xxs tracking-wider uppercase transition cursor-pointer"
+                className="w-full border border-[#00FF9C]/40 hover:bg-[#00FF9C]/10 text-[#00FF9C] py-2.5 rounded-xl font-mono text-xxs tracking-wider uppercase transition cursor-pointer mb-2"
               >
                 ⚡ Instant sync (Dev Bypass)
+              </button>
+
+              <button
+                id="open-sandbox-otp-panel-btn"
+                type="button"
+                onClick={() => setShowDevHub(true)}
+                className="w-full bg-[#11241E] text-[#00FF9C] hover:bg-[#00FF9C]/10 border-2 border-[#00FF9C]/25 hover:border-[#00FF9C]/60 py-2.5 rounded-xl font-mono text-xxs tracking-wider uppercase transition cursor-pointer flex items-center justify-center gap-1.5 font-bold shadow-[0_0_15px_rgba(0,255,156,0.1)] hover:shadow-[0_0_25px_rgba(0,255,156,0.2)]"
+              >
+                🔑 Open Sandbox SMS & OTP Generator
               </button>
             </form>
           ) : (
@@ -719,6 +745,19 @@ export default function App() {
   // --- RESOLVE BUDDY CHAT WINDOW CONTENT (DETERMINE SELECTED CHAT DATA) ---
   const getBuddyProfile = () => {
     if (!activeChatId) return null;
+    if (activeChatId.startsWith("group_")) {
+      const groupDoc = groups.find(g => g.id === activeChatId);
+      if (groupDoc) {
+        return {
+          uid: groupDoc.id,
+          displayName: groupDoc.name,
+          photoURL: groupDoc.avatar || "https://images.unsplash.com/photo-1582213782179-e0d53f98f2ca?auto=format&fit=crop&q=80&w=200",
+          bio: `${groupDoc.members.length} members`,
+          phone: "Group Channel",
+          isOnline: true
+        };
+      }
+    }
     const room = chats.find(c => c.id === activeChatId);
     const otherParticipantUid = room?.participants.find(p => p !== userId);
     return otherParticipantUid === "ai-bot" 
@@ -755,7 +794,22 @@ export default function App() {
 
       {/* DevHub Drawer Overlay */}
       {showDevHub && (
-        <DevHub onClose={() => setShowDevHub(false)} />
+        <DevHub 
+          onClose={() => setShowDevHub(false)} 
+          activePhone={phone || "+91 99999 11111"}
+          onInjectOtp={(targetPhone, code) => {
+            setPhone(targetPhone);
+            setGeneratedOtp(code);
+            setOtpSent(true);
+            setForceMockMode(true);
+            setOtpNotification(`[SMS_GATEWAY] MAHRAJ Verification PIN is: ${code}`);
+            setSystemBanner({
+              title: "Sandbox OTP Injected",
+              message: `Simulated OTP pin (${code}) generated for subscriber: ${targetPhone}. Sandbox bypass active.`,
+              type: "success"
+            });
+          }}
+        />
       )}
 
       {/* Modern Profile Settings Panel Component */}
@@ -838,83 +892,304 @@ export default function App() {
           {/* Content Lists */}
           <main className="flex-1 overflow-y-auto py-3 bg-[#050505]">
             
-            {/* Tab 1: CHATS VIEW PANEL */}
+            {/* Tab 1: CHATS VIEW PANEL WITH SEAMLESS PRIVATE/GROUP SWITCH AND GROUPS CREATOR */}
             {navTab === "chats" && (
-              <div id="chats-tab-view" className="px-3 space-y-2">
-                {chats.length === 0 ? (
-                  <div className="text-center py-20 text-gray-500 font-mono text-[11px] max-w-xs mx-auto space-y-4">
-                    <div className="w-12 h-12 rounded-full border border-white/5 bg-[#0A0A0A] flex items-center justify-center mx-auto text-lg animate-bounce">
-                      ✨
-                    </div>
-                    <p>No secure chats active. Launch code connection now!</p>
-                    <button
-                      onClick={() => setShowContacts(true)}
-                      className="px-3 py-1.5 border border-[#00FF9C]/40 hover:border-[#00FF9C] rounded font-mono text-xxs text-[#00FF9C] bg-[#00FF9C]/5 transition cursor-pointer uppercase tracking-widest"
-                    >
-                      INITIALIZE NEW PAYLOAD
-                    </button>
-                  </div>
-                ) : (
-                  chats.map((room) => {
-                    const otherUid = room.participants.find(p => p !== userId);
-                    const isBot = otherUid === "ai-bot";
-                    
-                    const profileObj = isBot 
-                      ? STARTER_USERS["ai-bot"] 
-                      : allUsers.find(u => u.uid === otherUid) || {
-                          uid: otherUid || "fallback-id",
-                          displayName: "Secure Client Node",
-                          photoURL: "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&q=80&w=200",
-                          bio: "Encrypted node",
-                          phone: "+91 00000 00000",
-                          isOnline: false
-                        };
+              <div id="chats-tab-view" className="px-3 space-y-3">
+                {/* Seamless WhatsApp-style toggle to swap between private and group chat views */}
+                <div className="flex gap-1 bg-[#0A0A0A] p-1 rounded-xl border border-white/5">
+                  <button
+                    id="tab-private-chats"
+                    onClick={() => {
+                      setChatTab("private");
+                      setActiveChatType("private");
+                    }}
+                    className={`flex-1 py-2 px-3 rounded-lg text-[10px] font-mono font-bold tracking-wider uppercase transition cursor-pointer flex items-center justify-center gap-1.5 ${
+                      chatTab === "private"
+                        ? "bg-[#00FF9C]/10 text-[#00FF9C] border border-[#00FF9C]/20"
+                        : "text-gray-400 hover:text-white border border-transparent"
+                    }`}
+                  >
+                    <span>💬</span> {t("private_tab") || "Direct Chats"}
+                  </button>
+                  <button
+                    id="tab-group-chats"
+                    onClick={() => {
+                      setChatTab("group");
+                      setActiveChatType("group");
+                    }}
+                    className={`flex-1 py-2 px-3 rounded-lg text-[10px] font-mono font-bold tracking-wider uppercase transition cursor-pointer flex items-center justify-center gap-1.5 ${
+                      chatTab === "group"
+                        ? "bg-[#00D1FF]/10 text-[#00D1FF] border border-[#00D1FF]/20"
+                        : "text-gray-400 hover:text-white border border-transparent"
+                    }`}
+                  >
+                    <span>👥</span> {t("groups_tab") || "Group Rooms"} ({groups.length})
+                  </button>
+                </div>
 
-                    const roomMsgs = messages[room.id] || [];
-                    const unreadCount = roomMsgs.filter(m => m.senderId !== userId && m.status !== "read").length;
+                {/* Group Creation UI Trigger Bar (Only shown under Group Section) */}
+                {chatTab === "group" && (
+                  <button
+                    id="trigger-create-group-modal"
+                    onClick={() => {
+                      setNewGroupName("");
+                      setSelectedGroupMembers([]);
+                      setShowCreateGroupModal(true);
+                    }}
+                    className="w-full py-2.5 bg-gradient-to-r from-[#00D1FF]/10 to-[#00D1FF]/20 border border-[#00D1FF]/40 rounded-xl font-mono text-[10px] font-bold text-[#00D1FF] hover:from-[#00D1FF]/20 hover:to-[#00D1FF]/30 tracking-widest uppercase transition flex items-center justify-center gap-2 cursor-pointer shadow-[0_2px_10px_rgba(0,209,255,0.05)]"
+                  >
+                    <Plus className="w-4 h-4 text-[#00D1FF]" />
+                    <span>CREATE SECURE GROUP CHANNEL</span>
+                  </button>
+                )}
 
-                    return (
-                      <div
-                        id={`chat-room-item-${room.id}`}
-                        key={room.id}
-                        onClick={() => setActiveChatId(room.id)}
-                        className={`p-3 rounded-2xl border cursor-pointer flex items-center justify-between transition ${
-                          activeChatId === room.id 
-                            ? "bg-[#101F1A]/80 border-[#00FF9C]/40 text-white" 
-                            : "bg-[#0A0A0A] border-white/5 hover:border-[#00FF9C]/20 hover:bg-[#0A0A0A]/60"
-                        }`}
-                      >
-                        <div className="flex items-center gap-3">
-                          <div className="relative">
-                            <img src={profileObj.photoURL} alt="Avatar" className="w-10 h-10 rounded-full object-cover border border-[#050505]" />
-                            {profileObj.isOnline && (
-                              <span className="absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full bg-[#00FF9C] border-2 border-[#0A0A0A] animate-pulse" />
-                            )}
-                          </div>
-                          <div className="max-w-[190px]">
-                            <h4 className="text-xs font-semibold text-white tracking-wide flex items-center gap-1.5 uppercase truncate">
-                              {profileObj.displayName}
-                              {isBot && (
-                                <span className="bg-[#00FF9C]/15 text-[#00FF9C] text-[8px] font-mono border border-[#00FF9C]/30 rounded px-1.5">AI</span>
-                              )}
-                            </h4>
-                            <p className="text-gray-400 text-[11px] font-sans truncate mt-0.5" title={room.lastMessage}>
-                              {room.lastMessageSender === userId ? "You: " : ""}{room.lastMessage}
-                            </p>
-                          </div>
+                {/* RENDERING PRIVATE ON-TO-ONE CHATS */}
+                {chatTab === "private" && (
+                  <div className="space-y-2">
+                    {chats.length === 0 ? (
+                      <div className="text-center py-20 text-gray-500 font-mono text-[11px] max-w-xs mx-auto space-y-4">
+                        <div className="w-12 h-12 rounded-full border border-white/5 bg-[#0A0A0A] flex items-center justify-center mx-auto text-lg animate-bounce">
+                          ✨
                         </div>
-
-                        <div className="flex flex-col items-end gap-1 font-mono text-right shrink-0">
-                          <span className="text-[9px] text-[#00D1FF]">{room.lastMessageTime ? formatMsgDate(room.lastMessageTime) : ""}</span>
-                          {unreadCount > 0 && (
-                            <span className="w-4 h-4 bg-[#00FF9C] text-black rounded-full text-[9px] font-bold flex items-center justify-center shadow-[0_0_8px_rgba(0,255,156,0.5)]">
-                              {unreadCount}
-                            </span>
-                          )}
-                        </div>
+                        <p>No secure chats active. Launch code connection now!</p>
+                        <button
+                          onClick={() => setShowContacts(true)}
+                          className="px-3 py-1.5 border border-[#00FF9C]/40 hover:border-[#00FF9C] rounded font-mono text-xxs text-[#00FF9C] bg-[#00FF9C]/5 transition cursor-pointer uppercase tracking-widest"
+                        >
+                          INITIALIZE NEW PAYLOAD
+                        </button>
                       </div>
-                    );
-                  })
+                    ) : (
+                      chats.map((room) => {
+                        const otherUid = room.participants.find(p => p !== userId);
+                        const isBot = otherUid === "ai-bot";
+                        
+                        const profileObj = isBot 
+                          ? STARTER_USERS["ai-bot"] 
+                          : allUsers.find(u => u.uid === otherUid) || {
+                              uid: otherUid || "fallback-id",
+                              displayName: "Secure Client Node",
+                              photoURL: "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&q=80&w=200",
+                              bio: "Encrypted node",
+                              phone: "+91 00000 00000",
+                              isOnline: false
+                            };
+
+                        const roomMsgs = messages[room.id] || [];
+                        const unreadCount = roomMsgs.filter(m => m.senderId !== userId && m.status !== "read").length;
+
+                        return (
+                          <div
+                            id={`chat-room-item-${room.id}`}
+                            key={room.id}
+                            onClick={() => {
+                              setActiveChatId(room.id);
+                              setActiveChatType("private");
+                            }}
+                            className={`p-3 rounded-2xl border cursor-pointer flex items-center justify-between transition ${
+                              activeChatId === room.id 
+                                ? "bg-[#101F1A]/80 border-[#00FF9C]/40 text-white" 
+                                : "bg-[#0A0A0A] border-white/5 hover:border-[#00FF9C]/20 hover:bg-[#0A0A0A]/60"
+                            }`}
+                          >
+                            <div className="flex items-center gap-3">
+                              <div className="relative">
+                                <img src={profileObj.photoURL} alt="Avatar" className="w-10 h-10 rounded-full object-cover border border-[#050505]" />
+                                {profileObj.isOnline && (
+                                  <span className="absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full bg-[#00FF9C] border-2 border-[#0A0A0A] animate-pulse" />
+                                )}
+                              </div>
+                              <div className="max-w-[190px]">
+                                <h4 className="text-xs font-semibold text-white tracking-wide flex items-center gap-1.5 uppercase truncate">
+                                  {profileObj.displayName}
+                                  {isBot && (
+                                    <span className="bg-[#00FF9C]/15 text-[#00FF9C] text-[8px] font-mono border border-[#00FF9C]/30 rounded px-1.5">AI</span>
+                                  )}
+                                </h4>
+                                <p className="text-gray-400 text-[11px] font-sans truncate mt-0.5" title={room.lastMessage}>
+                                  {room.lastMessageSender === userId ? "You: " : ""}{room.lastMessage}
+                                </p>
+                              </div>
+                            </div>
+
+                            <div className="flex flex-col items-end gap-1 font-mono text-right shrink-0">
+                              <span className="text-[9px] text-[#00D1FF]">{room.lastMessageTime ? formatMsgDate(room.lastMessageTime) : ""}</span>
+                              {unreadCount > 0 && (
+                                <span className="w-4 h-4 bg-[#00FF9C] text-black rounded-full text-[9px] font-bold flex items-center justify-center shadow-[0_0_8px_rgba(0,255,156,0.5)]">
+                                  {unreadCount}
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })
+                    )}
+                  </div>
+                )}
+
+                {/* RENDERING MANY-TO-MANY GROUPS */}
+                {chatTab === "group" && (
+                  <div className="space-y-2">
+                    {groups.length === 0 ? (
+                      <div className="text-center py-20 text-gray-500 font-mono text-[11px] max-w-sm mx-auto space-y-4">
+                        <div className="w-11 h-11 rounded-full border border-gray-800 bg-[#0A0A0A] flex items-center justify-center mx-auto text-lg">
+                          👥
+                        </div>
+                        <p className="tracking-wide text-gray-400">No group conversations are active.</p>
+                        <p className="text-gray-600 text-[10px] leading-relaxed max-w-xs mx-auto">
+                          Create an end-to-end secure group to communicate, broadcast updates, and share secure payloads with multiple members synchronously!
+                        </p>
+                      </div>
+                    ) : (
+                      groups.map((group) => {
+                        const groupMsgs = messages[group.id] || [];
+                        const unreadCount = groupMsgs.filter(m => m.senderId !== userId && m.status !== "read").length;
+                        
+                        return (
+                          <div
+                            id={`group-room-item-${group.id}`}
+                            key={group.id}
+                            onClick={() => {
+                              setActiveChatId(group.id);
+                              setActiveChatType("group");
+                            }}
+                            className={`p-3 rounded-2xl border cursor-pointer flex items-center justify-between transition ${
+                              activeChatId === group.id 
+                                ? "bg-[#00D1FF]/5 border-[#00D1FF]/40 text-white" 
+                                : "bg-[#0A0A0A] border-white/5 hover:border-[#00D1FF]/20 hover:bg-[#0A0A0A]/60"
+                            }`}
+                          >
+                            <div className="flex items-center gap-3">
+                              <div className="relative">
+                                <img src={group.avatar} alt="Avatar" className="w-10 h-10 rounded-full object-cover border border-[#050505]" />
+                                <span className="absolute -bottom-1 -right-1 bg-[#00D1FF]/25 border border-[#00D1FF]/50 text-[#00D1FF] text-[8px] font-mono rounded px-1 scale-90">GP</span>
+                              </div>
+                              <div className="max-w-[190px]">
+                                <h4 className="text-xs font-semibold text-white tracking-wide uppercase truncate">
+                                  {group.name}
+                                </h4>
+                                <p className="text-gray-400 text-[11px] font-sans truncate mt-0.5" title={group.lastMessage}>
+                                  {group.lastMessageSender === userId ? "You: " : ""}{group.lastMessage}
+                                </p>
+                              </div>
+                            </div>
+
+                            <div className="flex flex-col items-end gap-1 font-mono text-right shrink-0">
+                              <span className="text-[9px] text-[#00D1FF]">{group.lastMessageTime ? formatMsgDate(group.lastMessageTime) : ""}</span>
+                              {unreadCount > 0 && (
+                                <span className="w-4 h-4 bg-[#00D1FF] text-black rounded-full text-[9px] font-bold flex items-center justify-center shadow-[0_0_8px_rgba(0,209,255,0.5)]">
+                                  {unreadCount}
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })
+                    )}
+                  </div>
+                )}
+
+                {/* CREATE GROUP MODAL DIALOG */}
+                {showCreateGroupModal && (
+                  <div id="create-group-dialog" className="fixed inset-0 z-50 bg-black/85 flex items-center justify-center p-4">
+                    <div className="w-full max-w-sm bg-[#0E0E0E] border-2 border-[#00D1FF]/30 rounded-3xl p-6 shadow-[0_0_30px_rgba(0,209,255,0.2)] flex flex-col max-h-[90vh]">
+                      <div className="text-center space-y-2 mb-4">
+                        <h3 className="text-white text-sm font-bold tracking-wider uppercase font-mono text-[#00D1FF]">
+                          Create Secure Group
+                        </h3>
+                        <p className="text-gray-500 text-[11px]">
+                          Select contacts to initialize a secure group session.
+                        </p>
+                      </div>
+
+                      {/* Group Name input */}
+                      <div className="space-y-1 mb-4">
+                        <label className="text-xxs font-mono text-gray-400 uppercase tracking-wider block">Group Name</label>
+                        <input
+                          id="new-group-name-input"
+                          type="text"
+                          value={newGroupName}
+                          onChange={e => setNewGroupName(e.target.value)}
+                          placeholder="e.g. Flutter Devs, Syed's Design"
+                          className="w-full bg-[#050505] border border-white/10 rounded-xl px-3 py-2.5 text-xs text-white placeholder-gray-700 font-sans focus:outline-none focus:border-[#00D1FF]"
+                        />
+                      </div>
+
+                      {/* Contacts selector listing */}
+                      <div className="flex-1 overflow-y-auto space-y-1.5 mb-4 max-h-[35vh] pr-1 scrollbar-thin">
+                        <span className="text-xxs font-mono text-gray-400 uppercase tracking-wider block mb-1">Select Members</span>
+                        {allUsers.filter(u => u.uid !== userId && u.uid !== "ai-bot").map(userObj => {
+                          const isChecked = selectedGroupMembers.includes(userObj.uid);
+                          return (
+                            <div
+                              id={`group-member-select-${userObj.uid}`}
+                              key={userObj.uid}
+                              onClick={() => {
+                                if (isChecked) {
+                                  setSelectedGroupMembers(prev => prev.filter(uid => uid !== userObj.uid));
+                                } else {
+                                  setSelectedGroupMembers(prev => [...prev, userObj.uid]);
+                                }
+                              }}
+                              className={`flex items-center justify-between p-2 rounded-xl border cursor-pointer transition ${
+                                isChecked 
+                                  ? "bg-[#00D1FF]/5 border-[#00D1FF]/40 text-white" 
+                                  : "bg-[#0A0A0A] border-white/5 hover:bg-white/5"
+                              }`}
+                            >
+                              <div className="flex items-center gap-2.5">
+                                <img src={userObj.photoURL} alt="Avatar" className="w-8 h-8 rounded-full object-cover border border-white/5" />
+                                <div>
+                                  <h5 className="text-[11px] font-semibold text-white">{userObj.displayName}</h5>
+                                  <span className="text-[9px] text-gray-500 font-mono">{userObj.phone}</span>
+                                </div>
+                              </div>
+
+                              <div className={`w-4 h-4 rounded border flex items-center justify-center transition ${
+                                isChecked ? "bg-[#00D1FF] border-[#00D1FF] text-black" : "border-gray-700 bg-transparent"
+                              }`}>
+                                {isChecked && <Check className="w-3 h-3 text-black stroke-[3px]" />}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+
+                      {/* Trigger Actions */}
+                      <div className="space-y-2 pt-2 border-t border-white/5">
+                        <button
+                          id="submit-create-group-btn"
+                          onClick={async () => {
+                            if (!newGroupName.trim()) {
+                              alert("Please enter a name for the group channel.");
+                              return;
+                            }
+                            if (selectedGroupMembers.length === 0) {
+                              alert("Please select at least one contact to include.");
+                              return;
+                            }
+                            const finalMembers = [userId || "", ...selectedGroupMembers];
+                            const createdId = await createGroup(newGroupName, finalMembers, userId || "");
+                            
+                            setActiveChatId(createdId);
+                            setActiveChatType("group");
+                            setShowCreateGroupModal(false);
+                            setNewGroupName("");
+                            setSelectedGroupMembers([]);
+                          }}
+                          className="w-full py-2.5 bg-[#00D1FF] text-black hover:bg-[#00D1FF]/80 font-mono text-xs font-bold tracking-widest uppercase rounded-xl transition cursor-pointer"
+                        >
+                          INITIALIZE GROUP
+                        </button>
+                        <button
+                          onClick={() => setShowCreateGroupModal(false)}
+                          className="w-full py-2 bg-transparent hover:bg-white/5 border border-white/10 text-gray-500 hover:text-white font-mono text-[9px] tracking-wider uppercase rounded-xl transition cursor-pointer"
+                        >
+                          CANCEL
+                        </button>
+                      </div>
+                    </div>
+                  </div>
                 )}
               </div>
             )}

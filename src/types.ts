@@ -6,6 +6,7 @@ export interface UserProfile {
   phone: string;
   isOnline: boolean;
   lastSeen?: string;
+  fcmToken?: string;
 }
 
 export interface ChatRoom {
@@ -17,6 +18,17 @@ export interface ChatRoom {
   avatar?: string;
   name?: string;
   typing?: Record<string, boolean>;
+}
+
+export interface GroupRoom {
+  id: string;
+  name: string;
+  members: string[];
+  creatorId: string;
+  avatar: string;
+  lastMessage?: string;
+  lastMessageSender?: string;
+  lastMessageTime?: string;
 }
 
 export interface Message {

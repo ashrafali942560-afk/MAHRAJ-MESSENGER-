@@ -11,6 +11,7 @@
         "bio": { "type": "string" },
         "phone": { "type": "string" },
         "isOnline": { "type": "boolean" },
+        "fcmToken": { "type": "string" },
         "lastSeen": { "type": "string", "format": "date-time" }
       },
       "required": ["uid", "displayName", "phone"]
@@ -27,6 +28,22 @@
         "lastMessageSender": { "type": "string" }
       },
       "required": ["id", "participants"]
+    },
+    "Group": {
+      "title": "Group Chat",
+      "description": "A collaborative chat group",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "members": { "type": "array" },
+        "creatorId": { "type": "string" },
+        "avatar": { "type": "string" },
+        "lastMessage": { "type": "string" },
+        "lastMessageTime": { "type": "string", "format": "date-time" },
+        "lastMessageSender": { "type": "string" }
+      },
+      "required": ["id", "name", "members", "creatorId"]
     },
     "Message": {
       "title": "Message",
@@ -88,6 +105,18 @@
     "/chats/{chatId}/messages/{messageId}": {
       "schema": "Message",
       "description": "Messages inside a chat room"
+    },
+    "/messages/{messageId}": {
+      "schema": "Message",
+      "description": "Direct private messages stored at root level"
+    },
+    "/groups/{groupId}": {
+      "schema": "Group",
+      "description": "Group chat conversations"
+    },
+    "/groups/{groupId}/messages/{messageId}": {
+      "schema": "Message",
+      "description": "Subcollection store of group specific messages"
     },
     "/statuses/{statusId}": {
       "schema": "StatusStory",

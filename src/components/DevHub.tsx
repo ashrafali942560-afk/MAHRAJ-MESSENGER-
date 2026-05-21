@@ -1,15 +1,291 @@
 import React, { useState } from "react";
-import { Terminal, Copy, Check, ShieldAlert, Layers, PhoneCall, MessageCircle, FileCode } from "lucide-react";
+import { Terminal, Copy, Check, ShieldAlert, Layers, PhoneCall, MessageCircle, FileCode, Key, Cpu, Smartphone, BookOpen, Send, RefreshCw } from "lucide-react";
 
-export function DevHub({ onClose }: { onClose: () => void }) {
-  const [activeTab, setActiveTab] = useState<"deps" | "rules" | "auth" | "chat" | "schema">("deps");
+export interface SmsLog {
+  id: string;
+  time: string;
+  recipient: string;
+  message: string;
+  code: string;
+  type: string;
+  status: "active" | "verified" | "expired";
+}
+
+export function DevHub({ 
+  onClose,
+  onInjectOtp,
+  activePhone = "+91 99999 11111"
+}: { 
+  onClose: () => void;
+  onInjectOtp?: (phone: string, code: string) => void;
+  activePhone?: string;
+}) {
+  const [activeTab, setActiveTab] = useState<"deps" | "rules" | "auth" | "chat" | "schema" | "otpGen">("otpGen");
   const [copied, setCopied] = useState<string | null>(null);
+
+  // SMS Simulator local queue state
+  const [smsQueue, setSmsQueue] = useState<SmsLog[]>([
+    {
+      id: "sms-initial-1",
+      time: "10:14:02",
+      recipient: "+91 99999 11111",
+      message: "[MAHRAJ SECURE GATEWAY] Auth PIN is 582910. Expiration 5m. Do not disclose.",
+      code: "582910",
+      type: "6-digit Numeric",
+      status: "verified"
+    }
+  ]);
+
+  // Form states for custom simulator
+  const [simPhone, setSimPhone] = useState(activePhone);
+  const [simLen, setSimLen] = useState<4 | 6 | 8>(6);
+  const [simType, setSimType] = useState<"numeric" | "alphanumeric" | "alpha">("numeric");
+  const [simTemplate, setSimTemplate] = useState("[MAHRAJ SIGN-IN] Security PIN is {code}. Valid for 5 minutes.");
 
   const copyToClipboard = (text: string, id: string) => {
     navigator.clipboard.writeText(text);
     setCopied(id);
     setTimeout(() => setCopied(null), 2000);
   };
+
+  const [guideTab, setGuideTab] = useState<"react" | "express" | "twilio">("react");
+
+  const handleGenerateSimulatedOtp = (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    
+    // Generate randomized verification character sets
+    let code = "";
+    if (simType === "numeric") {
+      const chars = "0123456789";
+      for (let i = 0; i < simLen; i++) {
+        code += chars.charAt(Math.floor(Math.random() * chars.length));
+      }
+    } else if (simType === "alphanumeric") {
+      const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+      for (let i = 0; i < simLen; i++) {
+        code += chars.charAt(Math.floor(Math.random() * chars.length));
+      }
+    } else {
+      const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+      for (let i = 0; i < simLen; i++) {
+        code += chars.charAt(Math.floor(Math.random() * chars.length));
+      }
+    }
+
+    // Replace the code placeholder
+    const formattedMessage = simTemplate.replace("{code}", code);
+
+    // Assemble simulated log database entry
+    const now = new Date();
+    const timeStr = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}:${now.getSeconds().toString().padStart(2, '0')}`;
+    
+    const newSms: SmsLog = {
+      id: "sms-" + Date.now(),
+      time: timeStr,
+      recipient: simPhone,
+      message: formattedMessage,
+      code,
+      type: `${simLen}-character ${simType.toUpperCase()}`,
+      status: "active"
+    };
+
+    setSmsQueue(prev => [newSms, ...prev]);
+
+    // Invoke inject callbacks to prefill parent forms
+    if (onInjectOtp) {
+      onInjectOtp(simPhone, code);
+    }
+  };
+
+  const handleBypassWithSms = (sms: SmsLog) => {
+    // Set as verified on queue
+    setSmsQueue(prev => 
+      prev.map(item => item.id === sms.id ? { ...item, status: "verified" } : item)
+    );
+    if (onInjectOtp) {
+      onInjectOtp(sms.recipient, sms.code);
+    }
+  };
+
+  const reactSnippet = `// ==========================================
+// 1. REACT OTP INPUT FIELD BINDER (WITH AUTO-FOCUS DRIFT)
+// file: src/components/OtpInput.tsx
+// ==========================================
+import React, { useRef, useState } from "react";
+
+export function OtpVerificationForm({ onVerify }: { onVerify: (code: string) => void }) {
+  const [digits, setDigits] = useState<string[]>(new Array(6).fill(""));
+  const inputRefs = useRef<(HTMLInputElement | null)[]>([]);
+
+  const handleChange = (index: number, val: string) => {
+    // Only accept numbers
+    const cleanVal = val.replace(/[^0-9]/g, "");
+    if (!cleanVal) return;
+
+    const newDigits = [...digits];
+    newDigits[index] = cleanVal.substring(cleanVal.length - 1);
+    setDigits(newDigits);
+
+    // Dynamic Focus Shift right
+    if (index < 5 && newDigits[index]) {
+      inputRefs.current[index + 1]?.focus();
+    }
+
+    // Trigger verify if full
+    const code = newDigits.join("");
+    if (code.length === 6) {
+      onVerify(code);
+    }
+  };
+
+  const handleKeyDown = (index: number, e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "Backspace") {
+      if (!digits[index] && index > 0) {
+        // Dynamic Focus Shift left
+        const newDigits = [...digits];
+        newDigits[index - 1] = "";
+        setDigits(newDigits);
+        inputRefs.current[index - 1]?.focus();
+      } else {
+        const newDigits = [...digits];
+        newDigits[index] = "";
+        setDigits(newDigits);
+      }
+    }
+  };
+
+  return (
+    <div className="flex justify-center gap-2">
+      {digits.map((digit, idx) => (
+        <input
+          key={idx}
+          ref={(el) => (inputRefs.current[idx] = el)}
+          type="text"
+          maxLength={1}
+          value={digit}
+          onChange={(e) => handleChange(idx, e.target.value)}
+          onKeyDown={(e) => handleKeyDown(idx, e)}
+          className="w-12 h-12 text-center text-xl font-bold font-mono bg-black border-2 border-[#00FF9C]/30 focus:border-[#00FF9C] rounded-lg text-white outline-none"
+        />
+      ))}
+    </div>
+  );
+}`;
+
+  const expressSnippet = `// ==========================================
+// 2. SECURE CRYPTOGRAPHIC GENERATOR API (EXPRESS + REDIS CACHE)
+// file: server/routes/auth_otp.js
+// ==========================================
+const express = require("express");
+const crypto = require("crypto");
+const router = express.Router();
+
+// Simulated In-Memory Database Store for testing bypass
+// In production, prefer standard REDIS container with "EX" TTL configuration
+const otpDatabaseBucket = new Map(); 
+
+// Request endpoint
+router.post("/api/otp/request", async (req, res) => {
+  const { phoneNumber } = req.body;
+  if (!phoneNumber) return res.status(400).json({ error: "Phone index required" });
+
+  // 1. Generate a secure, non-predictable cryptographic 6-digit random code
+  // Avoiding simple standard Math.random() for security compliance
+  const secureValue = crypto.randomInt(100000, 999999).toString();
+  
+  // 2. Set Expiry parameters (e.g. valid for 5 minutes)
+  const expiryEpoch = Date.now() + (5 * 60 * 1000); 
+
+  // 3. Cache inside database record
+  otpDatabaseBucket.set(phoneNumber, {
+    code: secureValue,
+    expiresAt: expiryEpoch,
+    verified: false
+  });
+
+  // 4. Dispatch SMS payload using API supplier...
+  console.log(\`[GATEWAY] Transmitting \${secureValue} to \${phoneNumber}\`);
+  
+  return res.json({ 
+    success: true, 
+    message: "SMS dispatched successfully",
+    expiresIn: "300s" // Provide countdown hints to client-side Web
+  });
+});
+
+// Verify endpoint
+router.post("/api/otp/verify", async (req, res) => {
+  const { phoneNumber, code } = req.body;
+  
+  if (!phoneNumber || !code) {
+    return res.status(400).json({ error: "Requires cell number and check digit" });
+  }
+
+  const cachedRecord = otpDatabaseBucket.get(phoneNumber);
+  
+  if (!cachedRecord) {
+    return res.status(404).json({ error: "No active handshakes found. Resend authorization code." });
+  }
+
+  // Check TTL timeouts
+  if (Date.now() > cachedRecord.expiresAt) {
+    otpDatabaseBucket.delete(phoneNumber);
+    return res.status(410).json({ error: "Passcode signature expired! Please request a new security code." });
+  }
+
+  // Validate check digit match
+  if (cachedRecord.code !== code) {
+    return res.status(401).json({ error: "Invalid OTP checksum verify. Handshake aborted." });
+  }
+
+  // Token is valid! Mark as resolved and issue session token jwt
+  otpDatabaseBucket.delete(phoneNumber); // Prevents replay attacks
+  
+  return res.json({
+    success: true,
+    userToken: "jwt_session_token_resolved_credentials_here"
+  });
+});
+
+module.exports = router;`;
+
+  const twilioSnippet = `// ==========================================
+// 3. PHYSICAL TRANSMISSION PROTOCOL VIA TWILIO GATEWAY CLIENT
+// file: server/utils/twilio.js
+// ==========================================
+const twilio = require("twilio");
+
+// Read from secure server environment configurations (Do NOT expose on client-side)
+const TWILIO_ACCOUNT_SID = process.env.TWILIO_ACCOUNT_SID;
+const TWILIO_AUTH_TOKEN = process.env.TWILIO_AUTH_TOKEN;
+const TWILIO_SENDER_NUMBER = process.env.TWILIO_SENDER_NUMBER; // Must be Twilio SMS active line
+
+const client = twilio(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN);
+
+/**
+ * Dispatches physical verification code to recipient subscriber
+ * @param {string} recipient - Full cellular phone index (+9199999...)
+ * @param {string} pinCode - Generated authentication token
+ */
+async function transmitPhysicalSms(recipient, pinCode) {
+  try {
+    const textMessageBody = \`[MAHRAJ SIGN-IN] Security passcode is \${pinCode}. Valid for 5 minutes. Do not share.\`;
+    
+    const response = await client.messages.create({
+      body: textMessageBody,
+      from: TWILIO_SENDER_NUMBER,
+      to: recipient
+    });
+    
+    console.log(\`[TWILIO DIRECTPORTAL] SMS status: \${response.status} • Carrier ID: \${response.sid}\`);
+    return { success: true, trackingId: response.sid };
+  } catch (error) {
+    console.error("[TWILIO FAILURE] SMS dispatch failed: ", error);
+    throw new Error("Sms transport pipeline crashed. Falling back to local diagnostic tools.");
+  }
+}
+
+module.exports = { transmitPhysicalSms };`;
 
   const pubspecCode = `name: mahraj_messenger
 description: A premium custom WhatsApp clone using Custom Neon Black aesthetics.
@@ -1338,10 +1614,260 @@ class _ChatScreenState extends State<ChatScreen> {
           >
             <FileCode className="w-3.5 h-3.5" /> Schemas (NoSQL)
           </button>
+          <button
+            id="tab-otp-generator-btn"
+            onClick={() => setActiveTab("otpGen")}
+            className={`flex items-center gap-2 px-3 py-2 text-xs font-mono rounded transition duration-200 ${
+              activeTab === "otpGen" ? "bg-[#080808] font-bold text-[#00FF9C] border-b-2 border-[#00FF9C] shadow-[0_0_10px_rgba(0,255,156,0.1)]" : "text-[#00D1FF] hover:text-white font-semibold"
+            }`}
+          >
+            <Key className="w-3.5 h-3.5" /> 🔑 OTP Simulator & Code Generator
+          </button>
         </div>
 
         {/* Content Body */}
         <div className="flex-1 overflow-y-auto p-4 bg-[#050505] font-mono text-xs text-gray-300">
+          {activeTab === "otpGen" && (
+            <div className="space-y-6">
+              {/* Feature Introduction Panel */}
+              <div className="p-4 bg-[#0a0a0a] border border-[#00FF9C]/20 rounded-xl flex flex-col md:flex-row gap-4 items-start md:items-center justify-between">
+                <div>
+                  <h3 className="text-[#00FF9C] text-sm font-bold tracking-widest flex items-center gap-1.5 uppercase">
+                    <Key className="w-4 h-4 text-[#00FF9C] animate-pulse" /> Cryptographic Integrated OTP Sandbox Hub
+                  </h3>
+                  <p className="text-gray-400 text-xxs leading-relaxed mt-1 font-sans">
+                    Test SMS/OTP handshakes offline in your browser, simulate gateways, and export copy-pasteable production-ready code blocks to verify codes on your own websites and messaging APIs.
+                  </p>
+                </div>
+                <div className="flex gap-2 shrink-0">
+                  <span className="text-[9px] font-mono border border-lime-500/30 bg-lime-950/20 text-lime-400 px-2.5 py-1 rounded-full uppercase tracking-wider font-bold">
+                    Mode: Sandbox Bypass Active
+                  </span>
+                </div>
+              </div>
+
+              {/* Dynamic Workspace: Generator console vs Outbox simulator */}
+              <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
+                {/* Panel A: Parameter configurations */}
+                <div className="lg:col-span-5 bg-[#0a0a0a] border border-white/5 p-4 rounded-xl space-y-4">
+                  <span className="text-[10px] text-[#00FF9C] font-bold tracking-widest uppercase block border-b border-white/5 pb-1.5">
+                    1. OTP Handshake Criteria
+                  </span>
+
+                  <form onSubmit={handleGenerateSimulatedOtp} className="space-y-3">
+                    <div>
+                      <label className="block text-[9px] text-gray-400 uppercase mb-1">Target Phone Subscriber</label>
+                      <input
+                        type="tel"
+                        value={simPhone}
+                        onChange={(e) => setSimPhone(e.target.value)}
+                        placeholder="e.g. +91 99999 11111"
+                        className="w-full bg-[#050505] border border-white/10 hover:border-[#00FF9C]/40 focus:border-[#00FF9C] text-white p-2 rounded text-xxs font-mono text-center tracking-widest"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-[9px] text-gray-400 uppercase mb-1">Passcode Length</label>
+                      <div className="grid grid-cols-3 gap-1">
+                        {[4, 6, 8].map((len) => (
+                          <button
+                            key={len}
+                            type="button"
+                            onClick={() => setSimLen(len as 4 | 6 | 8)}
+                            className={`p-1.5 text-xxs font-mono rounded border transition ${
+                              simLen === len
+                                ? "bg-[#00FF9C]/20 border-[#00FF9C] text-[#00FF9C] font-bold"
+                                : "bg-black border-white/5 text-gray-400 hover:text-white"
+                            }`}
+                          >
+                            {len} Chars
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="block text-[9px] text-gray-400 uppercase mb-1">Character Registry (Charset)</label>
+                      <div className="grid grid-cols-3 gap-1">
+                        {(["numeric", "alphanumeric", "alpha"] as const).map((t) => (
+                          <button
+                            key={t}
+                            type="button"
+                            onClick={() => setSimType(t)}
+                            className={`p-1.5 text-[10px] font-mono rounded border transition capitalize ${
+                              simType === t
+                                ? "bg-[#00FF9C]/20 border-[#00FF9C] text-[#00FF9C] font-bold"
+                                : "bg-black border-white/5 text-gray-400 hover:text-white"
+                            }`}
+                          >
+                            {t === "numeric" ? "Numeric" : t === "alphanumeric" ? "Alphanum" : "Alphabetic"}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="block text-[9px] text-gray-400 uppercase mb-1 flex justify-between">
+                        <span>SMS Text Template</span>
+                        <span className="text-[#00D1FF] lower-case font-normal text-[8px] tracking-normal font-sans text-[8px]">Use &#123;code&#125; target</span>
+                      </label>
+                      <textarea
+                        value={simTemplate}
+                        onChange={(e) => setSimTemplate(e.target.value)}
+                        rows={2}
+                        className="w-full bg-[#050505] border border-white/10 hover:border-[#00FF9C]/40 focus:border-[#00FF9C] text-gray-300 p-2 rounded text-xxs font-mono leading-normal"
+                      />
+                    </div>
+
+                    <button
+                      type="submit"
+                      className="w-full bg-[#00FF9C] hover:bg-emerald-400 text-black p-2.5 rounded font-mono text-xxs tracking-widest font-bold uppercase transition-all duration-200 cursor-pointer flex items-center justify-center gap-1.5 mt-2"
+                    >
+                      <Send className="w-3.5 h-3.5" /> Dispatch Simulated SMS
+                    </button>
+                  </form>
+                </div>
+
+                {/* Panel B: Outbox simulated logs queue */}
+                <div className="lg:col-span-7 bg-[#0a0a0a] border border-white/5 p-4 rounded-xl flex flex-col h-full min-h-[300px]">
+                  <span className="text-[10px] text-[#00D1FF] font-bold tracking-widest uppercase block border-b border-white/5 pb-1.5 mb-2">
+                    2. Live Simulated Carrier Logs (Carrier Queue)
+                  </span>
+
+                  <div className="flex-1 overflow-y-auto space-y-2 max-h-[280px] pr-1 scrollbar-thin scrollbar-thumb-white/10 scrollbar-track-transparent">
+                    {smsQueue.length === 0 ? (
+                      <div className="h-full flex flex-col justify-center items-center text-center text-gray-600 py-12">
+                        <Smartphone className="w-10 h-10 mb-2 animate-bounce opacity-30" />
+                        <p className="text-xxs font-mono">SMS log streams are clear. Generate an OTP above.</p>
+                      </div>
+                    ) : (
+                      smsQueue.map((sms) => (
+                        <div
+                          key={sms.id}
+                          className="bg-black/60 border border-white/5 rounded-lg p-3 hover:border-white/10 transition leading-normal space-y-2"
+                        >
+                          <div className="flex justify-between items-start">
+                            <div>
+                              <span className="text-[10px] text-[#00FF9C] font-bold font-mono tracking-wider">{sms.recipient}</span>
+                              <span className="text-[9px] text-[#00D1FF] bg-[#00D1FF]/10 font-mono px-1.5 py-0.5 rounded ml-2 uppercase text-[8px] font-bold">
+                                {sms.type}
+                              </span>
+                            </div>
+                            <span className="text-[9px] text-gray-650 font-mono">{sms.time}</span>
+                          </div>
+
+                          <p className="text-gray-300 text-xxs leading-relaxed bg-[#050505] p-2 rounded select-all font-mono border border-white/5 font-medium">
+                            {sms.message}
+                          </p>
+
+                          <div className="flex justify-between items-center bg-black/40 pt-1.5 border-t border-white/5">
+                            <span className="text-[10px] font-mono text-gray-500">
+                              Passcode value: <strong className="text-[#00FF9C] font-extrabold select-all">{sms.code}</strong>
+                            </span>
+
+                            <div className="flex gap-2">
+                              <button
+                                onClick={() => copyToClipboard(sms.code, "code-" + sms.code)}
+                                className="px-2 py-1 bg-white/5 hover:bg-white/10 text-gray-300 font-mono text-[9px] rounded flex items-center gap-1 transition cursor-pointer"
+                              >
+                                {copied === "code-" + sms.code ? (
+                                  <>
+                                    <Check className="w-3 h-3 text-lime-400" /> Copied!
+                                  </>
+                                ) : (
+                                  <>
+                                    <Copy className="w-3 h-3" /> Copy OTP
+                                  </>
+                                )}
+                              </button>
+
+                              <button
+                                onClick={() => handleBypassWithSms(sms)}
+                                className={`px-2.5 py-1 font-mono text-[9px] rounded flex items-center gap-1 transition cursor-pointer font-bold ${
+                                  sms.status === "verified"
+                                    ? "bg-lime-950/35 border border-lime-500/20 text-lime-400 shrink-0"
+                                    : "bg-[#00FF9C]/10 text-[#00FF9C] border border-[#00FF9C]/20 hover:bg-[#00FF9C]/20"
+                                }`}
+                              >
+                                {sms.status === "verified" ? "✓ Injected / Verified" : "⚡ Direct Auto-Fill & Bypass"}
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              {/* Section C: Implementation guides for Website and Messaging setups */}
+              <div className="space-y-3 bg-[#0a0a0a] border border-white/5 p-4 rounded-xl mt-4">
+                <div className="flex flex-col md:flex-row items-start md:items-center justify-between border-b border-white/5 pb-2.5 mb-2 gap-3">
+                  <div>
+                    <h3 className="text-white text-xs font-bold tracking-widest uppercase flex items-center gap-1.5">
+                      <BookOpen className="w-4 h-4 text-[#00D1FF]" /> 3. Website & Messaging Code Integration Guides
+                    </h3>
+                    <p className="text-gray-550 text-xxxs font-sans mt-0.5">
+                      Implement authorization flows securely on your real web applications and custom systems
+                    </p>
+                  </div>
+
+                  {/* Sub-navigation selector */}
+                  <div className="flex gap-1 bg-black p-0.5 rounded border border-white/5 text-xxs font-mono font-bold uppercase select-none">
+                    {(["react", "express", "twilio"] as const).map((tab) => (
+                      <button
+                        key={tab}
+                        onClick={() => setGuideTab(tab)}
+                        className={`px-3 py-1.5 rounded transition ${
+                          guideTab === tab
+                            ? "bg-[#00D1FF]/20 text-[#00D1FF] font-extrabold"
+                            : "text-gray-500 hover:text-white"
+                        }`}
+                      >
+                        {tab === "react" ? "React UI Form" : tab === "express" ? "Express node API" : "Twilio SMS Hub"}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Displaying selected snippet */}
+                <div className="space-y-3">
+                  <div className="flex justify-between items-center bg-[#070707] p-2 rounded border border-white/5">
+                    <span className="text-gray-400 text-xxs tracking-wide text-gray-400">
+                      {guideTab === "react" 
+                        ? "React OTP verification interface component with automatic input focus shifting on keypress" 
+                        : guideTab === "express" 
+                        ? "Node/Express backend routes showing safe API generation (crypto module) and matched token expiry checks" 
+                        : "Twilio REST service client node function illustrating cellular SMS transmission delivery"}
+                    </span>
+
+                    <button
+                      onClick={() => copyToClipboard(
+                        guideTab === "react" ? reactSnippet : guideTab === "express" ? expressSnippet : twilioSnippet, 
+                        guideTab
+                      )}
+                      className="px-2.5 py-1 bg-white/5 hover:bg-[#00D1FF]/20 text-[#00D1FF] border border-[#00D1FF]/30 font-mono text-[9px] rounded flex items-center gap-1.5 transition shrink-0 cursor-pointer font-bold"
+                    >
+                      {copied === guideTab ? (
+                        <>
+                          <Check className="w-3.5 h-3.5 text-lime-400" /> Copied Code!
+                        </>
+                      ) : (
+                        <>
+                          <Copy className="w-3.5 h-3.5" /> Copy Code
+                        </>
+                      )}
+                    </button>
+                  </div>
+
+                  <pre className="p-4 bg-black text-[#00D1FF]/90 rounded-lg overflow-x-auto whitespace-pre-wrap border border-white/5 leading-relaxed text-xxs font-mono max-h-[350px]">
+                    {guideTab === "react" ? reactSnippet : guideTab === "express" ? expressSnippet : twilioSnippet}
+                  </pre>
+                </div>
+              </div>
+            </div>
+          )}
+
           {activeTab === "deps" && (
             <div className="space-y-4">
               <div className="flex items-center justify-between bg-[#0A0A0A] p-2 rounded border border-white/5">

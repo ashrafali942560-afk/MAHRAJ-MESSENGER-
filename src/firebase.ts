@@ -18,6 +18,7 @@ import {
   Timestamp,
   serverTimestamp
 } from "firebase/firestore";
+import { getMessaging, getToken, onMessage, Messaging } from "firebase/messaging";
 import firebaseConfig from "../firebase-applet-config.json";
 
 // Standard Operation Type enum and error info interface as mandated in skill docs
@@ -53,6 +54,38 @@ if (getApps().length === 0) {
 
 export const auth = getAuth(app);
 export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId || "(default)");
+
+// Safe Messaging Initialization to handle sandboxed iframe or push API blocks elegantly
+let messagingInstance: Messaging | null = null;
+try {
+  messagingInstance = getMessaging(app);
+} catch (e) {
+  console.warn("Firebase Messaging service load skipped or not supported in this frame environment.", e);
+}
+
+export const messaging = messagingInstance;
+
+// Helper to register Web Push registration token
+export async function getWebPushToken(): Promise<string | null> {
+  if (isMockFirebase || !messaging) {
+    // Elegant simulated token with the target VAPID signature suffix for offline/mock operations
+    return "fcm_mock_token_BCDVwQCFfbWdqCjr_v1_" + Math.random().toString(36).substring(2, 10);
+  }
+  try {
+    const permission = await Notification.requestPermission();
+    if (permission === "granted") {
+      const token = await getToken(messaging, {
+        vapidKey: "BCDVwQCFfbWdqCjrwpVJb7fMN5K-CQ0gOVL3NyA0wuohuCR-iT7naVXLjfugMYa9U971G2S8d5OXHCSKcl2gwcQ"
+      });
+      return token;
+    } else {
+      console.warn("Notification permission was not granted by client.");
+    }
+  } catch (err) {
+    console.error("FCM Token Extraction Error: ", err);
+  }
+  return null;
+}
 
 // Mandated handleFirestoreError function
 export function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {

@@ -1,12 +1,12 @@
 import React, { useState } from "react";
 import { 
   X, Check, ChevronRight, Globe, Phone, RefreshCw, 
-  ShieldCheck, ArrowRight, User, Key, LogOut
+  ShieldCheck, ArrowRight, User, Key, LogOut, Bell
 } from "lucide-react";
 import { UserProfile } from "../types";
 import { LANGUAGES, useTranslation, LanguageCode } from "../lib/i18n";
 import { RecaptchaVerifier, signInWithPhoneNumber } from "firebase/auth";
-import { auth, isMockFirebase } from "../firebase";
+import { auth, isMockFirebase, getWebPushToken } from "../firebase";
 import { saveUserProfile } from "../lib/state";
 
 interface SettingsPanelProps {
@@ -46,6 +46,11 @@ export function SettingsPanel({
   const [phoneConfirmationResult, setPhoneConfirmationResult] = useState<any>(null);
   const [showConfirmLogout, setShowConfirmLogout] = useState(false);
   const [phoneSystemAlert, setPhoneSystemAlert] = useState<{ title: string; message: string; type: "error" | "warning" | "success" } | null>(null);
+
+  // FCM / VAPID States
+  const [fcmTokenState, setFcmTokenState] = useState(userProfile?.fcmToken || "");
+  const [isConfiguringFcm, setIsConfiguringFcm] = useState(false);
+  const [fcmCopied, setFcmCopied] = useState(false);
 
   // Autosave generic info
   const handleSaveBasicInfo = async (field: "displayName" | "bio" | "photoURL", val: string) => {
@@ -266,6 +271,36 @@ export function SettingsPanel({
     } finally {
       setIsVerifying(false);
     }
+  };
+
+  // Activate Cloud Web Push Notifications
+  const handleActivatePush = async () => {
+    setIsConfiguringFcm(true);
+    try {
+      const token = await getWebPushToken();
+      if (token) {
+        setFcmTokenState(token);
+        if (userProfile) {
+          const updated = {
+            ...userProfile,
+            fcmToken: token
+          };
+          onUpdateProfile(updated);
+          await saveUserProfile(updated);
+        }
+      }
+    } catch (e) {
+      console.error("Error setting up active FCM session", e);
+    } finally {
+      setIsConfiguringFcm(false);
+    }
+  };
+
+  const copyFcmTokenToClipboard = () => {
+    if (!fcmTokenState) return;
+    navigator.clipboard.writeText(fcmTokenState);
+    setFcmCopied(true);
+    setTimeout(() => setFcmCopied(false), 2000);
   };
 
   return (
@@ -496,6 +531,78 @@ export function SettingsPanel({
                 </button>
               </div>
             )}
+          </div>
+
+          {/* Section 3.5: Cloud Push Notification Engine */}
+          <div className="space-y-3 pt-3 border-t border-white/5">
+            <div className="flex justify-between items-center">
+              <h3 className="text-xs font-bold font-mono text-gray-300 uppercase flex items-center gap-2">
+                <Bell className="w-4 h-4 text-[#00FF9C]" />
+                Web Push Cloud Gateway
+              </h3>
+              {!fcmTokenState && (
+                <button
+                  id="activate-push-btn"
+                  onClick={handleActivatePush}
+                  disabled={isConfiguringFcm}
+                  className="text-[10px] font-mono text-[#00FF9C] border border-[#00FF9C]/20 hover:border-[#00FF9C] rounded px-2.5 py-1 transition cursor-pointer flex items-center gap-1"
+                >
+                  {isConfiguringFcm ? (
+                    <RefreshCw className="w-3 h-3 animate-spin animate-infinite" />
+                  ) : (
+                    "ACTIVATE"
+                  )}
+                </button>
+              )}
+            </div>
+
+            <div className="bg-[#121212] p-4 rounded-xl border border-white/5 space-y-3">
+              <div className="flex justify-between items-start">
+                <div className="space-y-0.5">
+                  <span className="text-[9px] font-mono text-gray-500 uppercase">NOTIFICATION ENGINE STATUS</span>
+                  <p className={`font-mono text-xs font-bold tracking-widest ${fcmTokenState ? 'text-[#00FF9C]' : 'text-[#00D1FF]'}`}>
+                    {fcmTokenState ? "CONNECTED (VAPID)" : "INACTIVE PROTOCOL"}
+                  </p>
+                </div>
+                {fcmTokenState && (
+                  <span className="bg-[#00FF9C]/10 border border-[#00FF9C]/30 text-[#00FF9C] px-2 py-0.5 rounded text-[8px] font-mono uppercase tracking-widest animate-pulse">
+                    ONLINE
+                  </span>
+                )}
+              </div>
+
+              <div className="bg-[#181818] p-3 rounded-xl border border-white/5 space-y-2">
+                <span className="text-[9px] font-mono text-gray-500 uppercase block">FCM CONFIGURATION PARAMS</span>
+                
+                <div className="space-y-1">
+                  <span className="text-[8px] font-mono text-gray-600 uppercase block">TARGET VAPID PUBLIC KEY</span>
+                  <div className="bg-[#0A0A0A] px-2 py-1.5 rounded border border-white/5 select-all overflow-x-auto">
+                    <p className="text-gray-400 font-mono text-[9px] whitespace-nowrap scrollbar-none">
+                      BCDVwQCFfbWdqCjrwpVJb7fMN5K-CQ0gOVL3NyA0wuohuCR-iT7naVXLjfugMYa9U971G2S8d5OXHCSKcl2gwcQ
+                    </p>
+                  </div>
+                </div>
+
+                {fcmTokenState && (
+                  <div className="space-y-1.5 pt-1">
+                    <span className="text-[8px] font-mono text-gray-600 uppercase block">REGISTRATION TOKEN OUTPORT</span>
+                    <div className="flex gap-2">
+                      <div className="flex-1 bg-[#050505] px-2.5 py-1.5 rounded border border-[#00D1FF]/20 overflow-x-auto max-h-[60px] scrollbar-thin">
+                        <p className="text-[#00D1FF] font-mono text-[9px] whitespace-normal break-all">
+                          {fcmTokenState}
+                        </p>
+                      </div>
+                      <button
+                        onClick={copyFcmTokenToClipboard}
+                        className="bg-[#00D1FF]/10 hover:bg-[#00D1FF]/20 text-[#00D1FF] border border-[#00D1FF]/30 px-3 py-1.5 rounded-lg text-[9px] font-mono font-bold uppercase shrink-0 transition"
+                      >
+                        {fcmCopied ? "COPIED" : "COPY KEY"}
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
           </div>
 
           {/* Section 4: Exit Credentials Protocol */}
