@@ -124,7 +124,8 @@ export async function saveUserProfile(profile: UserProfile): Promise<void> {
         bio: profile.bio || "Available on MAHRAJ Messenger",
         photoURL: profile.photoURL || "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&q=80&w=200",
         isOnline: profile.isOnline ?? true,
-        lastSeen: new Date().toISOString()
+        lastSeen: new Date().toISOString(),
+        blockedUsers: profile.blockedUsers || []
       });
     } catch (e) {
       handleFirestoreError(e, OperationType.WRITE, path);
@@ -159,6 +160,60 @@ export function getAllUsersLocal(): UserProfile[] {
   const users = getLocal<Record<string, UserProfile>>("users", {});
   return Object.values(users);
 }
+
+// Look up user profiles securely by phone number E.164 query in Firestore or local storage fallback
+export async function findUserByPhone(phone: string): Promise<UserProfile | null> {
+  const formattedPhone = phone.replace(/[^\d+]/g, ""); // strip non-E.164 formatting characters
+  const cleanedQuery = formattedPhone.startsWith("+") 
+    ? formattedPhone 
+    : formattedPhone.length === 10 
+      ? `+91${formattedPhone}` 
+      : formattedPhone;
+
+  if (!isMockFirebase) {
+    const path = "users";
+    try {
+      const q = query(collection(db, "users"), where("phone", "==", cleanedQuery));
+      const snap = await getDocs(q);
+      if (!snap.empty) {
+        return snap.docs[0].data() as UserProfile;
+      }
+      return null;
+    } catch (e) {
+      handleFirestoreError(e, OperationType.LIST, path);
+      return null;
+    }
+  } else {
+    const users = getLocal<Record<string, UserProfile>>("users", {});
+    const match = Object.values(users).find(u => {
+      const uPhone = u.phone.replace(/[^\d+]/g, "");
+      const uPhoneCleaned = uPhone.startsWith("+") 
+        ? uPhone 
+        : uPhone.length === 10 
+          ? `+91${uPhone}` 
+          : uPhone;
+      return uPhoneCleaned === cleanedQuery;
+    });
+    return match || null;
+  }
+}
+
+// Synced device contacts persistence helpers
+export interface SyncedContact {
+  name: string;
+  phone: string;
+  isRegistered?: boolean;
+  profile?: UserProfile;
+}
+
+export function getSyncedContactsLocal(): SyncedContact[] {
+  return getLocal<SyncedContact[]>("synced_contacts", []);
+}
+
+export function saveSyncedContactsLocal(contacts: SyncedContact[]) {
+  setLocal<SyncedContact[]>("synced_contacts", contacts);
+}
+
 
 export function listenAllUsers(onUpdate: (users: UserProfile[]) => void): () => void {
   if (!isMockFirebase) {
@@ -282,6 +337,8 @@ export function listenMessages(chatId: string, onUpdate: (messages: Message[]) =
           text: data.text || data.messageText || "",
           mediaUrl: data.mediaUrl,
           mediaType: data.mediaType || data.messageType,
+          fileName: data.fileName,
+          fileSize: data.fileSize,
           timestamp: data.timestamp,
           status: data.status || "sent"
         });
@@ -317,10 +374,12 @@ export async function sendMessage(
   senderId: string, 
   text: string, 
   mediaUrl?: string, 
-  mediaType?: "image" | "video"
+  mediaType?: "image" | "video" | "audio" | "document",
+  fileName?: string,
+  fileSize?: string
 ): Promise<void> {
   if (chatId.startsWith("group_")) {
-    return sendGroupMessage(chatId, senderId, text, mediaUrl, mediaType);
+    return sendGroupMessage(chatId, senderId, text, mediaUrl, mediaType, fileName, fileSize);
   }
   const timestamp = new Date().toISOString();
   const id = "msg_" + Date.now() + "_" + Math.random().toString(36).substring(2, 6);
@@ -332,9 +391,22 @@ export async function sendMessage(
     text,
     mediaUrl,
     mediaType,
+    fileName,
+    fileSize,
     timestamp,
     status: "sent"
   };
+
+  const getPreviewText = () => {
+    if (!mediaUrl) return text;
+    if (mediaType === "image") return "🖼️ Image";
+    if (mediaType === "video") return "🎥 Video";
+    if (mediaType === "audio") return "🎙️ Voice Message";
+    if (mediaType === "document") return `📄 ${fileName || "Document"}`;
+    return text;
+  };
+
+  const previewText = getPreviewText();
 
   if (!isMockFirebase) {
     const pathMessage = `messages/${id}`;
@@ -351,6 +423,8 @@ export async function sendMessage(
         messageType: mediaUrl ? (mediaType || "image") : "text",
         mediaType: mediaUrl ? (mediaType || "image") : "text", // keep for UI compatibility
         mediaUrl: mediaUrl || "",
+        fileName: fileName || "",
+        fileSize: fileSize || "",
         chatId,
         status: "sent"
       });
@@ -359,7 +433,7 @@ export async function sendMessage(
       await setDoc(doc(db, "chats", chatId), {
         id: chatId,
         participants: chatId.split("_"),
-        lastMessage: mediaUrl ? (mediaType === "image" ? "🖼️ Image" : "🎥 Video") : text,
+        lastMessage: previewText,
         lastMessageSender: senderId,
         lastMessageTime: timestamp
       }, { merge: true });
@@ -381,7 +455,7 @@ export async function sendMessage(
     const chats = getLocal<ChatRoom[]>("chats", []);
     const chatIndex = chats.findIndex(c => c.id === chatId);
     if (chatIndex !== -1) {
-      chats[chatIndex].lastMessage = mediaUrl ? (mediaType === "image" ? "🖼️ Image" : "🎥 Video") : text;
+      chats[chatIndex].lastMessage = previewText;
       chats[chatIndex].lastMessageSender = senderId;
       chats[chatIndex].lastMessageTime = timestamp;
       setLocal("chats", chats);
@@ -389,7 +463,7 @@ export async function sendMessage(
       chats.push({
         id: chatId,
         participants: chatId.split("_"),
-        lastMessage: mediaUrl ? (mediaType === "image" ? "🖼️ Image" : "🎥 Video") : text,
+        lastMessage: previewText,
         lastMessageSender: senderId,
         lastMessageTime: timestamp
       });
@@ -401,9 +475,9 @@ export async function sendMessage(
 // --- GROUP CHAT SPECIFIC OPERATIONS ---
 
 // 1. Create a group in Firestore groups collection
-export async function createGroup(name: string, members: string[], creatorId: string): Promise<string> {
+export async function createGroup(name: string, members: string[], creatorId: string, customAvatar?: string): Promise<string> {
   const groupId = "group_" + Date.now() + "_" + Math.random().toString(36).substring(2, 6);
-  const avatar = `https://images.unsplash.com/photo-1582213782179-e0d53f98f2ca?auto=format&fit=crop&q=80&w=200`; // elegant group avatar
+  const avatar = customAvatar || `https://images.unsplash.com/photo-1582213782179-e0d53f98f2ca?auto=format&fit=crop&q=80&w=200`; // elegant group avatar default
   const timestamp = new Date().toISOString();
 
   const newGroup: GroupRoom = {
@@ -457,6 +531,25 @@ export async function createGroup(name: string, members: string[], creatorId: st
   return groupId;
 }
 
+export async function updateGroupMembers(groupId: string, members: string[]): Promise<void> {
+  if (!isMockFirebase) {
+    const path = `groups/${groupId}`;
+    try {
+      await updateDoc(doc(db, "groups", groupId), { members });
+    } catch (e) {
+      handleFirestoreError(e, OperationType.WRITE, path);
+    }
+  } else {
+    const groups = getLocal<GroupRoom[]>("groups", []);
+    const idx = groups.findIndex(g => g.id === groupId);
+    if (idx !== -1) {
+      groups[idx].members = members;
+      setLocal("groups", groups);
+      window.dispatchEvent(new Event("storage_sync_groups"));
+    }
+  }
+}
+
 // 2. Listen to active groups for current user
 export function listenGroups(uid: string, onUpdate: (groups: GroupRoom[]) => void): () => void {
   if (!isMockFirebase) {
@@ -508,6 +601,8 @@ export function listenGroupMessages(groupId: string, onUpdate: (messages: Messag
           text: data.text || data.messageText || "",
           mediaUrl: data.mediaUrl,
           mediaType: data.mediaType || data.messageType,
+          fileName: data.fileName,
+          fileSize: data.fileSize,
           timestamp: data.timestamp,
           status: data.status || "sent"
         });
@@ -543,7 +638,9 @@ export async function sendGroupMessage(
   senderId: string,
   text: string,
   mediaUrl?: string,
-  mediaType?: "image" | "video"
+  mediaType?: "image" | "video" | "audio" | "document",
+  fileName?: string,
+  fileSize?: string
 ): Promise<void> {
   const timestamp = new Date().toISOString();
   const id = "msg_" + Date.now() + "_" + Math.random().toString(36).substring(2, 6);
@@ -554,9 +651,22 @@ export async function sendGroupMessage(
     text,
     mediaUrl,
     mediaType,
+    fileName,
+    fileSize,
     timestamp,
     status: "sent"
   };
+
+  const getPreviewText = () => {
+    if (!mediaUrl) return text;
+    if (mediaType === "image") return "🖼️ Image";
+    if (mediaType === "video") return "🎥 Video";
+    if (mediaType === "audio") return "🎙️ Voice Message";
+    if (mediaType === "document") return `📄 ${fileName || "Document"}`;
+    return text;
+  };
+
+  const previewText = getPreviewText();
 
   if (!isMockFirebase) {
     const pathMessage = `groups/${groupId}/messages/${id}`;
@@ -570,13 +680,15 @@ export async function sendGroupMessage(
         mediaUrl: mediaUrl || "",
         mediaType: mediaUrl ? (mediaType || "image") : "text",
         messageType: mediaUrl ? (mediaType || "image") : "text",
+        fileName: fileName || "",
+        fileSize: fileSize || "",
         timestamp,
         status: "sent"
       });
 
       // 2. Update parent document state for reactive preview listing
       await updateDoc(doc(db, "groups", groupId), {
-        lastMessage: mediaUrl ? (mediaType === "image" ? "🖼️ Image" : "🎥 Video") : text,
+        lastMessage: previewText,
         lastMessageSender: senderId,
         lastMessageTime: timestamp
       });
@@ -595,7 +707,7 @@ export async function sendGroupMessage(
     const groups = getLocal<GroupRoom[]>("groups", []);
     const groupIdx = groups.findIndex(g => g.id === groupId);
     if (groupIdx !== -1) {
-      groups[groupIdx].lastMessage = mediaUrl ? (mediaType === "image" ? "🖼️ Image" : "🎥 Video") : text;
+      groups[groupIdx].lastMessage = previewText;
       groups[groupIdx].lastMessageSender = senderId;
       groups[groupIdx].lastMessageTime = timestamp;
       setLocal("groups", groups);
@@ -715,6 +827,38 @@ export async function deleteStatusStory(storyId: string) {
   }
 }
 
+export async function deleteChat(chatId: string) {
+  if (!isMockFirebase) {
+    const path = `chats/${chatId}`;
+    try {
+      await deleteDoc(doc(db, "chats", chatId));
+    } catch (e) {
+      handleFirestoreError(e, OperationType.WRITE, path);
+    }
+  } else {
+    const chats = getLocal<ChatRoom[]>("chats", []);
+    const updated = chats.filter(c => c.id !== chatId);
+    setLocal("chats", updated);
+    window.dispatchEvent(new Event("storage_sync_chats"));
+  }
+}
+
+export async function deleteGroup(groupId: string) {
+  if (!isMockFirebase) {
+    const path = `groups/${groupId}`;
+    try {
+      await deleteDoc(doc(db, "groups", groupId));
+    } catch (e) {
+      handleFirestoreError(e, OperationType.WRITE, path);
+    }
+  } else {
+    const groups = getLocal<GroupRoom[]>("groups", []);
+    const updated = groups.filter(g => g.id !== groupId);
+    setLocal("groups", updated);
+    window.dispatchEvent(new Event("storage_sync_groups"));
+  }
+}
+
 // --- CALL LOGGING & CALL SIGNALING ---
 export function listenActiveCalls(uid: string, onUpdate: (calls: CallLog[]) => void): () => void {
   if (!isMockFirebase) {
@@ -788,6 +932,7 @@ export async function initiateCall(
     const calls = getLocal<CallLog[]>("calls", []);
     calls.unshift(newCall);
     setLocal("calls", calls);
+    window.dispatchEvent(new Event("storage_sync_calls"));
   }
 
   return callId;
@@ -814,5 +959,36 @@ export async function updateCallStatus(callId: string, status: CallLog["status"]
       }
       setLocal("calls", calls);
     }
+    window.dispatchEvent(new Event("storage_sync_calls"));
+  }
+}
+
+export function listenCall(callId: string, onUpdate: (call: CallLog) => void): () => void {
+  if (!isMockFirebase) {
+    const path = `calls/${callId}`;
+    return onSnapshot(doc(db, "calls", callId), (docSnap) => {
+      if (docSnap.exists()) {
+        onUpdate(docSnap.data() as CallLog);
+      }
+    }, (error) => {
+      handleFirestoreError(error, OperationType.GET, path);
+    });
+  } else {
+    const loadAndEmit = () => {
+      const allCalls = getLocal<CallLog[]>("calls", []);
+      const call = allCalls.find(c => c.id === callId);
+      if (call) {
+        onUpdate(call);
+      }
+    };
+
+    loadAndEmit();
+    const handleStorageChange = () => loadAndEmit();
+    window.addEventListener("storage_sync_calls", handleStorageChange);
+    const interval = setInterval(loadAndEmit, 1000);
+    return () => {
+      window.removeEventListener("storage_sync_calls", handleStorageChange);
+      clearInterval(interval);
+    };
   }
 }

@@ -7,6 +7,7 @@ export interface UserProfile {
   isOnline: boolean;
   lastSeen?: string;
   fcmToken?: string;
+  blockedUsers?: string[];
 }
 
 export interface ChatRoom {
@@ -36,7 +37,9 @@ export interface Message {
   senderId: string;
   text: string;
   mediaUrl?: string;
-  mediaType?: "image" | "video";
+  mediaType?: "image" | "video" | "audio" | "document";
+  fileName?: string;
+  fileSize?: string;
   timestamp: string;
   status: "sent" | "delivered" | "read";
 }

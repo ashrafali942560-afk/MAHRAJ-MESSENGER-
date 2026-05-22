@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from "react";
 import { Phone, PhoneOff, Video, VideoOff, Mic, MicOff, Volume2, User, Camera } from "lucide-react";
+import { listenCall } from "../lib/state";
 
 interface CallScreenProps {
   callId: string;
@@ -32,7 +33,7 @@ export function CallScreen({
   const audioCtxRef = useRef<AudioContext | null>(null);
 
   // Synthesized Ringtone Generator using Browser Web Audio API (to avoid loading external audio files)
-  const startRingtoneSynth = () => {
+  const startRingtoneSynth = (isOutgoing = false) => {
     try {
       const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
       if (!AudioContextClass) return;
@@ -40,28 +41,43 @@ export function CallScreen({
       audioCtxRef.current = ctx;
 
       const playBeep = () => {
+        // Only ring if we are still waiting for answer
         if (status !== "ringing") return;
         const osc = ctx.createOscillator();
         const gain = ctx.createGain();
         osc.connect(gain);
         gain.connect(ctx.destination);
 
-        osc.type = "sine";
-        // Standard telephone ring frequency pairing
-        osc.frequency.setValueAtTime(440, ctx.currentTime);
-        
-        gain.gain.setValueAtTime(0, ctx.currentTime);
-        gain.gain.linearRampToValueAtTime(0.15, ctx.currentTime + 0.1);
-        gain.gain.setValueAtTime(0.15, ctx.currentTime + 0.8);
-        gain.gain.linearRampToValueAtTime(0, ctx.currentTime + 0.9);
+        if (isOutgoing) {
+          // Standard low single beep hold tone for outgoing call wait state (425Hz)
+          osc.type = "sine";
+          osc.frequency.setValueAtTime(425, ctx.currentTime);
+          
+          gain.gain.setValueAtTime(0, ctx.currentTime);
+          gain.gain.linearRampToValueAtTime(0.08, ctx.currentTime + 0.1);
+          gain.gain.setValueAtTime(0.08, ctx.currentTime + 1.2);
+          gain.gain.linearRampToValueAtTime(0, ctx.currentTime + 1.3);
+          
+          osc.start();
+          osc.stop(ctx.currentTime + 1.5);
+        } else {
+          // Standard dual telephone ring frequency pairing
+          osc.type = "sine";
+          osc.frequency.setValueAtTime(440, ctx.currentTime);
+          
+          gain.gain.setValueAtTime(0, ctx.currentTime);
+          gain.gain.linearRampToValueAtTime(0.12, ctx.currentTime + 0.1);
+          gain.gain.setValueAtTime(0.12, ctx.currentTime + 0.8);
+          gain.gain.linearRampToValueAtTime(0, ctx.currentTime + 0.9);
 
-        osc.start();
-        osc.stop(ctx.currentTime + 1.2);
+          osc.start();
+          osc.stop(ctx.currentTime + 1.2);
+        }
       };
 
-      // Play Beep every 3 seconds
+      // Play Beep immediately
       playBeep();
-      const interval = window.setInterval(playBeep, 2500);
+      const interval = window.setInterval(playBeep, isOutgoing ? 4000 : 2500);
       ringtoneTimer.current = interval;
     } catch (e) {
       console.warn("Virtual ringtone failed to start:", e);
@@ -81,6 +97,9 @@ export function CallScreen({
 
   // Start Call Timer
   const startCallTimer = () => {
+    if (callDurationTimer.current) {
+      clearInterval(callDurationTimer.current);
+    }
     const interval = window.setInterval(() => {
       setDuration(prev => prev + 1);
     }, 1000);
@@ -135,26 +154,44 @@ export function CallScreen({
   };
 
   useEffect(() => {
-    if (direction === "incoming") {
-      startRingtoneSynth();
-    } else {
-      // Outgoing calls connect instantly in simulation for slick prototyping feel
-      setStatus("connected");
-      onAnswer();
-      startCallTimer();
-      if (type === "video") {
-        startCamera();
+    const isOutgoing = direction === "outgoing";
+    
+    // Start proper synthesized call-sound environment
+    startRingtoneSynth(isOutgoing);
+
+    // Dynamic handshaking: State listener subscribing directly to Firestore / Local state
+    const unsubscribe = listenCall(callId, (updatedCall) => {
+      if (updatedCall.status === "connected") {
+        // Call answered! Transition screen instantly
+        stopRingtone();
+        setStatus("connected");
+        startCallTimer();
+        if (type === "video" && !cameraStream) {
+          startCamera();
+        }
+      } else if (updatedCall.status === "completed" || updatedCall.status === "declined" || updatedCall.status === "missed") {
+        // Call ended or declined by remote peer! Wrap session up with clean animations
+        stopRingtone();
+        stopCamera();
+        if (callDurationTimer.current) {
+          clearInterval(callDurationTimer.current);
+        }
+        setStatus("ended");
+        setTimeout(() => {
+          onHangup(updatedCall.duration || duration);
+        }, 1200);
       }
-    }
+    });
 
     return () => {
+      unsubscribe();
       stopRingtone();
       stopCamera();
       if (callDurationTimer.current) {
         clearInterval(callDurationTimer.current);
       }
     };
-  }, []);
+  }, [callId, direction, type, cameraStream]);
 
   const formatTimer = (secs: number) => {
     const mins = Math.floor(secs / 60);

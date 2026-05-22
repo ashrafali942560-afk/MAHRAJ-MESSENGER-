@@ -1,8 +1,9 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { 
   MessageSquare, Users, Phone, Settings, LogOut, Terminal, 
   Sparkles, ShieldCheck, HelpCircle, PhoneCall, Plus, ArrowRight,
-  Shield, Edit2, CheckCircle, RefreshCcw, BellRing, Lock, Check
+  Shield, Edit2, CheckCircle, RefreshCcw, BellRing, Lock, Check, Trash2,
+  Search, X
 } from "lucide-react";
 import { auth, isMockFirebase } from "./firebase";
 import { RecaptchaVerifier, signInWithPhoneNumber, ConfirmationResult } from "firebase/auth";
@@ -34,9 +35,12 @@ import {
   listenMessages,
   listenStatuses,
   deleteStatusStory,
+  deleteChat,
+  deleteGroup,
   listenActiveCalls,
   initiateCall,
   updateCallStatus,
+  listenCall,
   STARTER_USERS,
   listenGroups,
   createGroup
@@ -48,6 +52,7 @@ import { ContactSelector } from "./components/ContactSelector";
 import { ChatWindow } from "./components/ChatWindow";
 import { SettingsPanel } from "./components/SettingsPanel";
 import { useTranslation } from "./lib/i18n";
+import { useNativeBackNavigation } from "./hooks/useNativeBackNavigation";
 
 export default function App() {
   const { t, currentLanguage } = useTranslation();
@@ -84,6 +89,7 @@ export default function App() {
 
   // Navigation tab states
   const [navTab, setNavTab] = useState<"chats" | "status" | "calls">("chats");
+  const [searchText, setSearchText] = useState("");
 
   // Models states synced in real-time
   const [allUsers, setAllUsers] = useState<UserProfile[]>([]);
@@ -92,6 +98,114 @@ export default function App() {
   const [messages, setMessages] = useState<Record<string, Message[]>>({});
   const [statuses, setStatuses] = useState<StatusStory[]>([]);
   const [calls, setCalls] = useState<CallLog[]>([]);
+
+  const isFirstLoad = useRef(true);
+  const lastNotifiedTimeRef = useRef<Record<string, string>>({});
+  const lastNotifiedGroupTimeRef = useRef<Record<string, string>>({});
+
+  // Real-time Push & Haptic Notification handler
+  useEffect(() => {
+    if (!userId || chats.length === 0) return;
+
+    // Proactively register Notification permissions if possible
+    if (typeof window !== "undefined" && "Notification" in window && Notification.permission === "default") {
+      Notification.requestPermission().catch(console.error);
+    }
+
+    chats.forEach((room) => {
+      const lastMsgTime = room.lastMessageTime;
+      if (!lastMsgTime) return;
+
+      const isIncoming = room.lastMessageSender !== userId;
+      const prevTime = lastNotifiedTimeRef.current[room.id];
+
+      // Check for a real-time incoming update
+      if (isIncoming && !isFirstLoad.current && prevTime && prevTime !== lastMsgTime) {
+        const otherUid = room.participants.find(p => p !== userId);
+        const isBot = otherUid === "ai-bot";
+        const profileObj = isBot 
+          ? STARTER_USERS["ai-bot"] 
+          : allUsers.find(u => u.uid === otherUid);
+        
+        const senderName = profileObj?.displayName || "Secure Client Node";
+        const messageBody = room.lastMessage;
+
+        // Native Browser alert (Mobile + Desktop matching user description)
+        if (typeof window !== "undefined" && "Notification" in window && Notification.permission === "granted") {
+          try {
+            new Notification(senderName, {
+              body: messageBody,
+              icon: profileObj?.photoURL || "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&q=80&w=200"
+            });
+          } catch (e) {
+            console.warn("FCM Fallback: Native notification build blocked: ", e);
+          }
+        }
+
+        // Mobile alert system: standard device physical Vibration
+        if (typeof navigator !== "undefined" && "vibrate" in navigator) {
+          try {
+            navigator.vibrate([150, 80, 150]);
+          } catch (e) {
+            console.warn("Vibrate not permitted inline in iframe", e);
+          }
+        }
+
+        // Elegant floating visual inline notification bar fallback inside application
+        setOtpNotification(`💬 Msg from ${senderName}: "${messageBody}"`);
+      }
+
+      lastNotifiedTimeRef.current[room.id] = lastMsgTime;
+    });
+
+    if (chats.length > 0) {
+      isFirstLoad.current = false;
+    }
+  }, [chats, userId, allUsers]);
+
+  // Real-time Group Notifications handler
+  useEffect(() => {
+    if (!userId || groups.length === 0) return;
+
+    groups.forEach((group) => {
+      const lastMsgTime = group.lastMessageTime;
+      if (!lastMsgTime) return;
+
+      const isIncoming = group.lastMessageSender !== userId;
+      const prevTime = lastNotifiedGroupTimeRef.current[group.id];
+
+      if (isIncoming && !isFirstLoad.current && prevTime && prevTime !== lastMsgTime) {
+        const groupName = group.name;
+        const messageBody = group.lastMessage;
+        
+        const senderProfile = allUsers.find(u => u.uid === group.lastMessageSender);
+        const senderName = senderProfile?.displayName || "Encrypted Node";
+
+        if (typeof window !== "undefined" && "Notification" in window && Notification.permission === "granted") {
+          try {
+            new Notification(`👥 ${groupName}`, {
+              body: `${senderName}: ${messageBody}`,
+              icon: group.avatar
+            });
+          } catch (e) {
+            console.warn("FCM Fallback: Group notification block: ", e);
+          }
+        }
+
+        if (typeof navigator !== "undefined" && "vibrate" in navigator) {
+          try {
+            navigator.vibrate([150, 80, 150]);
+          } catch (e) {
+            console.warn("Vibration failed inside frame workspace environment.", e);
+          }
+        }
+
+        setOtpNotification(`👥 Group ${groupName}: "${senderName}: ${messageBody}"`);
+      }
+
+      lastNotifiedGroupTimeRef.current[group.id] = lastMsgTime;
+    });
+  }, [groups, userId, allUsers]);
 
   // Group UI & view state variables
   const [activeChatType, setActiveChatType] = useState<"private" | "group">("private");
@@ -106,6 +220,16 @@ export default function App() {
   const [showContacts, setShowContacts] = useState(false);
   const [showDevHub, setShowDevHub] = useState(false);
   const [showProfileSettings, setShowProfileSettings] = useState(false);
+
+  // Hook up physical back button and gesture navigation support
+  useNativeBackNavigation({
+    activeChatId,
+    setActiveChatId,
+    showProfileSettings,
+    setShowProfileSettings,
+    showCreateGroupModal,
+    setShowCreateGroupModal
+  });
 
   // Avatar presets
   const AVATAR_PRESETS = [
@@ -922,17 +1046,33 @@ export default function App() {
               <h1 className="text-md font-extrabold tracking-widest text-white uppercase">{t("app_title")}</h1>
             </div>
 
-            <div className="flex items-center gap-3">
-              <button 
-                onClick={() => setShowDevHub(true)}
-                className="p-1 px-2 border border-[#00FF9C]/30 hover:border-[#00FF9C] rounded text-[#00FF9C] text-[9px] font-mono tracking-widest uppercase transition duration-150 animate-pulse cursor-pointer"
-              >
-                DEV HUB
-              </button>
+            <div className="flex items-center gap-2 flex-1 justify-end">
+              {/* Cybernetic Search Chat facility in place of Dev Hub */}
+              <div className="relative flex items-center bg-black/50 border border-[#00FF9C]/20 focus-within:border-[#00FF9C] rounded-xl px-2.5 py-1.5 transition-all duration-300 shadow-[0_0_15px_rgba(0,255,156,0.05)]">
+                <Search className="w-3.5 h-3.5 text-[#00FF9C]/80 mr-1.5 shrink-0" />
+                <input
+                  id="chat-search-input"
+                  type="text"
+                  value={searchText}
+                  onChange={(e) => setSearchText(e.target.value)}
+                  placeholder="Search Chat..."
+                  className="bg-transparent text-[10px] font-mono text-white placeholder-gray-600 focus:outline-none w-16 sm:w-20 md:w-24 focus:w-28 md:focus:w-32 transition-all duration-300"
+                />
+                {searchText && (
+                  <button 
+                    onClick={() => setSearchText("")} 
+                    className="ml-1 text-[#00FF9C] hover:text-white shrink-0"
+                    title="Clear search"
+                  >
+                    <X className="w-3 h-3" />
+                  </button>
+                )}
+              </div>
               
               <button
+                id="profile-settings-btn"
                 onClick={() => setShowProfileSettings(true)}
-                className="w-8 h-8 rounded-full overflow-hidden border border-[#00FF9C]/40 hover:border-[#00FF9C] transition cursor-pointer"
+                className="w-8 h-8 rounded-full overflow-hidden border border-[#00FF9C]/40 hover:border-[#00FF9C] transition cursor-pointer shrink-0"
                 title="System settings"
               >
                 <img src={userProfile?.photoURL || AVATAR_PRESETS[0]} alt="Me" className="w-full h-full object-cover" />
@@ -1039,69 +1179,120 @@ export default function App() {
                         </button>
                       </div>
                     ) : (
-                      chats.map((room) => {
-                        const otherUid = room.participants.find(p => p !== userId);
-                        const isBot = otherUid === "ai-bot";
-                        
-                        const profileObj = isBot 
-                          ? STARTER_USERS["ai-bot"] 
-                          : allUsers.find(u => u.uid === otherUid) || {
-                              uid: otherUid || "fallback-id",
-                              displayName: "Secure Client Node",
-                              photoURL: "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&q=80&w=200",
-                              bio: "Encrypted node",
-                              phone: "+91 00000 00000",
-                              isOnline: false
-                            };
+                      (() => {
+                        const filtered = [...chats].filter((room) => {
+                          const otherUid = room.participants.find(p => p !== userId);
+                          const isBot = otherUid === "ai-bot";
+                          const profileObj = isBot 
+                            ? STARTER_USERS["ai-bot"] 
+                            : allUsers.find(u => u.uid === otherUid);
+                          
+                          if (!searchText) return true;
+                          const nameMatch = profileObj?.displayName?.toLowerCase().includes(searchText.toLowerCase());
+                          const lastMsgMatch = room.lastMessage?.toLowerCase().includes(searchText.toLowerCase());
+                          return !!(nameMatch || lastMsgMatch);
+                        });
 
-                        const roomMsgs = messages[room.id] || [];
-                        const unreadCount = roomMsgs.filter(m => m.senderId !== userId && m.status !== "read").length;
+                        if (filtered.length === 0) {
+                          return (
+                            <div className="text-center py-20 text-gray-500 font-mono text-[11px] max-w-xs mx-auto space-y-2">
+                              <div>🔍</div>
+                              <p className="font-bold text-[#00FF9C]">No Chats Found</p>
+                              <p className="text-gray-400 text-[10px]">No matches for "{searchText}" in direct conversations.</p>
+                            </div>
+                          );
+                        }
 
-                        return (
-                          <div
-                            id={`chat-room-item-${room.id}`}
-                            key={room.id}
-                            onClick={() => {
-                              setActiveChatId(room.id);
-                              setActiveChatType("private");
-                            }}
-                            className={`p-3 rounded-2xl border cursor-pointer flex items-center justify-between transition ${
-                              activeChatId === room.id 
-                                ? "bg-[#101F1A]/80 border-[#00FF9C]/40 text-white" 
-                                : "bg-[#0A0A0A] border-white/5 hover:border-[#00FF9C]/20 hover:bg-[#0A0A0A]/60"
-                            }`}
-                          >
-                            <div className="flex items-center gap-3">
-                              <div className="relative">
-                                <img src={profileObj.photoURL} alt="Avatar" className="w-10 h-10 rounded-full object-cover border border-[#050505]" />
-                                {profileObj.isOnline && (
-                                  <span className="absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full bg-[#00FF9C] border-2 border-[#0A0A0A] animate-pulse" />
-                                )}
-                              </div>
-                              <div className="max-w-[190px]">
-                                <h4 className="text-xs font-semibold text-white tracking-wide flex items-center gap-1.5 uppercase truncate">
-                                  {profileObj.displayName}
-                                  {isBot && (
-                                    <span className="bg-[#00FF9C]/15 text-[#00FF9C] text-[8px] font-mono border border-[#00FF9C]/30 rounded px-1.5">AI</span>
+                        return filtered.sort((a, b) => {
+                          const timeA = a.lastMessageTime ? new Date(a.lastMessageTime).getTime() : 0;
+                          const timeB = b.lastMessageTime ? new Date(b.lastMessageTime).getTime() : 0;
+                          return timeB - timeA;
+                        }).map((room) => {
+                          const otherUid = room.participants.find(p => p !== userId);
+                          const isBot = otherUid === "ai-bot";
+                          
+                          const profileObj = isBot 
+                            ? STARTER_USERS["ai-bot"] 
+                            : allUsers.find(u => u.uid === otherUid) || {
+                                uid: otherUid || "fallback-id",
+                                displayName: "Secure Client Node",
+                                photoURL: "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&q=80&w=200",
+                                bio: "Encrypted node",
+                                phone: "+91 00000 00000",
+                                isOnline: false
+                              };
+
+                          const roomMsgs = messages[room.id] || [];
+                          const unreadCount = roomMsgs.filter(m => m.senderId !== userId && m.status !== "read").length;
+
+                          return (
+                            <div
+                              id={`chat-room-item-${room.id}`}
+                              key={room.id}
+                              onClick={() => {
+                                setActiveChatId(room.id);
+                                setActiveChatType("private");
+                              }}
+                              className={`p-3 rounded-2xl border cursor-pointer flex items-center justify-between transition ${
+                                activeChatId === room.id 
+                                  ? "bg-[#101F1A]/80 border-[#00FF9C]/40 text-white" 
+                                  : "bg-[#0A0A0A] border-white/5 hover:border-[#00FF9C]/20 hover:bg-[#0A0A0A]/60"
+                              }`}
+                            >
+                              <div className="flex items-center gap-3">
+                                <div className="relative">
+                                  <img src={profileObj.photoURL} alt="Avatar" className="w-10 h-10 rounded-full object-cover border border-[#050505]" />
+                                  {profileObj.isOnline && (
+                                    <span className="absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full bg-[#00FF9C] border-2 border-[#0A0A0A] animate-pulse" />
                                   )}
-                                </h4>
-                                <p className="text-gray-400 text-[11px] font-sans truncate mt-0.5" title={room.lastMessage}>
-                                  {room.lastMessageSender === userId ? "You: " : ""}{room.lastMessage}
-                                </p>
+                                </div>
+                                <div className="max-w-[190px]">
+                                  <h4 className="text-xs font-semibold text-white tracking-wide flex items-center gap-1.5 uppercase truncate">
+                                    {profileObj.displayName}
+                                    {isBot && (
+                                      <span className="bg-[#00FF9C]/15 text-[#00FF9C] text-[8px] font-mono border border-[#00FF9C]/30 rounded px-1.5">AI</span>
+                                    )}
+                                  </h4>
+                                  <p className="text-gray-400 text-[11px] font-sans truncate mt-0.5" title={room.lastMessage}>
+                                    {room.lastMessageSender === userId ? "You: " : ""}{room.lastMessage}
+                                  </p>
+                                </div>
+                              </div>
+
+                              <div className="flex items-center gap-3 shrink-0">
+                                <div className="flex flex-col items-end gap-1 font-mono text-right">
+                                  <span className="text-[9px] text-[#00D1FF]">{room.lastMessageTime ? formatMsgDate(room.lastMessageTime) : ""}</span>
+                                  {unreadCount > 0 && (
+                                    <span className="w-4 h-4 bg-[#00FF9C] text-black rounded-full text-[9px] font-bold flex items-center justify-center shadow-[0_0_8px_rgba(0,255,156,0.5)]">
+                                      {unreadCount}
+                                    </span>
+                                  )}
+                                </div>
+                                <button
+                                  id={`delete-chat-btn-${room.id}`}
+                                  title="Delete secret chat history"
+                                  onClick={async (e) => {
+                                    e.stopPropagation();
+                                    if (confirm("Are you sure you want to delete this secret chat history? This action is irreversible.")) {
+                                      try {
+                                        await deleteChat(room.id);
+                                        if (activeChatId === room.id) {
+                                          setActiveChatId(null);
+                                        }
+                                      } catch (err) {
+                                        console.error("Failed to delete chat:", err);
+                                      }
+                                    }
+                                  }}
+                                  className="w-7 h-7 rounded-lg bg-red-950/20 text-red-400 hover:text-red-300 border border-red-500/15 hover:bg-red-500/20 flex items-center justify-center transition"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
                               </div>
                             </div>
-
-                            <div className="flex flex-col items-end gap-1 font-mono text-right shrink-0">
-                              <span className="text-[9px] text-[#00D1FF]">{room.lastMessageTime ? formatMsgDate(room.lastMessageTime) : ""}</span>
-                              {unreadCount > 0 && (
-                                <span className="w-4 h-4 bg-[#00FF9C] text-black rounded-full text-[9px] font-bold flex items-center justify-center shadow-[0_0_8px_rgba(0,255,156,0.5)]">
-                                  {unreadCount}
-                                </span>
-                              )}
-                            </div>
-                          </div>
-                        );
-                      })
+                          );
+                        });
+                      })()
                     )}
                   </div>
                 )}
@@ -1120,50 +1311,95 @@ export default function App() {
                         </p>
                       </div>
                     ) : (
-                      groups.map((group) => {
-                        const groupMsgs = messages[group.id] || [];
-                        const unreadCount = groupMsgs.filter(m => m.senderId !== userId && m.status !== "read").length;
-                        
-                        return (
-                          <div
-                            id={`group-room-item-${group.id}`}
-                            key={group.id}
-                            onClick={() => {
-                              setActiveChatId(group.id);
-                              setActiveChatType("group");
-                            }}
-                            className={`p-3 rounded-2xl border cursor-pointer flex items-center justify-between transition ${
-                              activeChatId === group.id 
-                                ? "bg-[#00D1FF]/5 border-[#00D1FF]/40 text-white" 
-                                : "bg-[#0A0A0A] border-white/5 hover:border-[#00D1FF]/20 hover:bg-[#0A0A0A]/60"
-                            }`}
-                          >
-                            <div className="flex items-center gap-3">
-                              <div className="relative">
-                                <img src={group.avatar} alt="Avatar" className="w-10 h-10 rounded-full object-cover border border-[#050505]" />
-                                <span className="absolute -bottom-1 -right-1 bg-[#00D1FF]/25 border border-[#00D1FF]/50 text-[#00D1FF] text-[8px] font-mono rounded px-1 scale-90">GP</span>
-                              </div>
-                              <div className="max-w-[190px]">
-                                <h4 className="text-xs font-semibold text-white tracking-wide uppercase truncate">
-                                  {group.name}
-                                </h4>
-                                <p className="text-gray-400 text-[11px] font-sans truncate mt-0.5" title={group.lastMessage}>
-                                  {group.lastMessageSender === userId ? "You: " : ""}{group.lastMessage}
-                                </p>
-                              </div>
-                            </div>
+                      (() => {
+                        const filtered = [...groups].filter((g) => {
+                          if (!searchText) return true;
+                          const nameMatch = g.name.toLowerCase().includes(searchText.toLowerCase());
+                          const lastMsgMatch = g.lastMessage?.toLowerCase().includes(searchText.toLowerCase());
+                          return nameMatch || lastMsgMatch;
+                        });
 
-                            <div className="flex flex-col items-end gap-1 font-mono text-right shrink-0">
-                              <span className="text-[9px] text-[#00D1FF]">{group.lastMessageTime ? formatMsgDate(group.lastMessageTime) : ""}</span>
-                              {unreadCount > 0 && (
-                                <span className="w-4 h-4 bg-[#00D1FF] text-black rounded-full text-[9px] font-bold flex items-center justify-center shadow-[0_0_8px_rgba(0,209,255,0.5)]">
-                                  {unreadCount}
-                                </span>
-                              )}
+                        if (filtered.length === 0) {
+                          return (
+                            <div className="text-center py-20 text-gray-500 font-mono text-[11px] max-w-xs mx-auto space-y-2">
+                              <div>🔍</div>
+                              <p className="font-bold text-[#00D1FF]">No Groups Found</p>
+                              <p className="text-gray-400 text-[10px]">No matches for "{searchText}" in your group rooms.</p>
                             </div>
-                          </div>
-                        );
-                      })
+                          );
+                        }
+
+                        return filtered.sort((a, b) => {
+                          const timeA = a.lastMessageTime ? new Date(a.lastMessageTime).getTime() : 0;
+                          const timeB = b.lastMessageTime ? new Date(b.lastMessageTime).getTime() : 0;
+                          return timeB - timeA;
+                        }).map((group) => {
+                          const groupMsgs = messages[group.id] || [];
+                          const unreadCount = groupMsgs.filter(m => m.senderId !== userId && m.status !== "read").length;
+                          
+                          return (
+                            <div
+                              id={`group-room-item-${group.id}`}
+                              key={group.id}
+                              onClick={() => {
+                                setActiveChatId(group.id);
+                                setActiveChatType("group");
+                              }}
+                              className={`p-3 rounded-2xl border cursor-pointer flex items-center justify-between transition ${
+                                activeChatId === group.id 
+                                  ? "bg-[#00D1FF]/5 border-[#00D1FF]/40 text-white" 
+                                  : "bg-[#0A0A0A] border-white/5 hover:border-[#00D1FF]/20 hover:bg-[#0A0A0A]/60"
+                              }`}
+                            >
+                              <div className="flex items-center gap-3">
+                                <div className="relative">
+                                  <img src={group.avatar} alt="Avatar" className="w-10 h-10 rounded-full object-cover border border-[#050505]" />
+                                  <span className="absolute -bottom-1 -right-1 bg-[#00D1FF]/25 border border-[#00D1FF]/50 text-[#00D1FF] text-[8px] font-mono rounded px-1 scale-90">GP</span>
+                                </div>
+                                <div className="max-w-[190px]">
+                                  <h4 className="text-xs font-semibold text-white tracking-wide uppercase truncate">
+                                    {group.name}
+                                  </h4>
+                                  <p className="text-gray-400 text-[11px] font-sans truncate mt-0.5" title={group.lastMessage}>
+                                    {group.lastMessageSender === userId ? "You: " : ""}{group.lastMessage}
+                                  </p>
+                                </div>
+                              </div>
+
+                              <div className="flex items-center gap-3 shrink-0">
+                                <div className="flex flex-col items-end gap-1 font-mono text-right">
+                                  <span className="text-[9px] text-[#00D1FF]">{group.lastMessageTime ? formatMsgDate(group.lastMessageTime) : ""}</span>
+                                  {unreadCount > 0 && (
+                                    <span className="w-4 h-4 bg-[#00D1FF] text-black rounded-full text-[9px] font-bold flex items-center justify-center shadow-[0_0_8px_rgba(0,209,255,0.5)]">
+                                      {unreadCount}
+                                    </span>
+                                  )}
+                                </div>
+                                <button
+                                  id={`delete-group-btn-${group.id}`}
+                                  title="Dissolve secure group channel"
+                                  onClick={async (e) => {
+                                    e.stopPropagation();
+                                    if (confirm("Are you sure you want to dissolve/exit this secure group room? All local logs will be cleared.")) {
+                                      try {
+                                        await deleteGroup(group.id);
+                                        if (activeChatId === group.id) {
+                                          setActiveChatId(null);
+                                        }
+                                      } catch (err) {
+                                        console.error("Failed to delete group:", err);
+                                      }
+                                    }
+                                  }}
+                                  className="w-7 h-7 rounded-lg bg-red-950/20 text-red-400 hover:text-red-300 border border-red-500/15 hover:bg-red-500/20 flex items-center justify-center transition"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              </div>
+                            </div>
+                          );
+                        });
+                      })()
                     )}
                   </div>
                 )}
@@ -1385,6 +1621,9 @@ export default function App() {
               messages={messages[activeChatId] || []}
               onBack={() => setActiveChatId(null)}
               onInitiateCall={handleStartCall}
+              onUpdateProfile={setUserProfile}
+              allUsers={allUsers}
+              activeGroupDoc={groups.find(g => g.id === activeChatId)}
             />
           ) : (
             <div className="p-8 text-center max-w-sm space-y-5 flex flex-col items-center">
@@ -1410,9 +1649,10 @@ export default function App() {
       {showContacts && (
         <ContactSelector
           contacts={allUsers}
-          currentUserId={userId}
+          currentUserId={userId || ""}
           onSelectContact={handleStartChatWithContact}
           onClose={() => setShowContacts(false)}
+          activeChatPartnerIds={chats.map(c => c.participants.find(p => p !== userId)).filter(Boolean) as string[]}
         />
       )}
     </div>

@@ -1,7 +1,7 @@
-import React, { useState } from "react";
+import React, { useState, useRef } from "react";
 import { 
   X, Check, ChevronRight, Globe, Phone, RefreshCw, 
-  ShieldCheck, ArrowRight, User, Key, LogOut, Bell
+  ShieldCheck, ArrowRight, User, Key, LogOut, Bell, Upload, Image
 } from "lucide-react";
 import { UserProfile } from "../types";
 import { LANGUAGES, useTranslation, LanguageCode } from "../lib/i18n";
@@ -34,6 +34,8 @@ export function SettingsPanel({
   const [displayName, setDisplayName] = useState(userProfile?.displayName || "");
   const [bio, setBio] = useState(userProfile?.bio || "");
   const [avatar, setAvatar] = useState(userProfile?.photoURL || avatarPresets[0]);
+  const [uploadingImage, setUploadingImage] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   
   // Phone Number Update flow states
   const [showPhoneUpdate, setShowPhoneUpdate] = useState(false);
@@ -51,6 +53,25 @@ export function SettingsPanel({
   const [fcmTokenState, setFcmTokenState] = useState(userProfile?.fcmToken || "");
   const [isConfiguringFcm, setIsConfiguringFcm] = useState(false);
   const [fcmCopied, setFcmCopied] = useState(false);
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setUploadingImage(true);
+    const reader = new FileReader();
+    reader.onload = async () => {
+      const base64 = reader.result as string;
+      setAvatar(base64);
+      await handleSaveBasicInfo("photoURL", base64);
+      setUploadingImage(false);
+    };
+    reader.onerror = () => {
+      setUploadingImage(false);
+      alert("Error reading chosen image file from your device.");
+    };
+    reader.readAsDataURL(file);
+  };
 
   // Autosave generic info
   const handleSaveBasicInfo = async (field: "displayName" | "bio" | "photoURL", val: string) => {
@@ -356,14 +377,36 @@ export function SettingsPanel({
           
           {/* Section 1: User Profile Signature Card */}
           <div className="flex flex-col items-center text-center space-y-4 pb-6 border-b border-white/5">
-            <div className="relative group">
-              <div className="w-24 h-24 rounded-full overflow-hidden border-2 border-[#00FF9C] shadow-[0_0_20px_rgba(0,255,156,0.2)]">
-                <img src={avatar} alt="Current avatar" className="w-full h-full object-cover" />
+            <div className="relative group cursor-pointer" onClick={() => fileInputRef.current?.click()}>
+              <div className="w-24 h-24 rounded-full overflow-hidden border-2 border-[#00FF9C] shadow-[0_0_20px_rgba(0,255,156,0.2)] flex items-center justify-center bg-black/50">
+                {uploadingImage ? (
+                  <RefreshCw className="w-6 h-6 text-[#00FF9C] animate-spin" />
+                ) : (
+                  <img src={avatar} alt="Current avatar" className="w-full h-full object-cover" />
+                )}
               </div>
-              <div className="absolute inset-0 bg-black/55 rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition duration-150">
-                <User className="w-6 h-6 text-[#00FF9C]" />
+              <div className="absolute inset-0 bg-black/60 rounded-full flex flex-col items-center justify-center opacity-0 group-hover:opacity-100 transition duration-150">
+                <Upload className="w-5 h-5 text-[#00FF9C] animate-bounce" />
+                <span className="text-[8px] font-mono text-[#00FF9C] uppercase tracking-wider font-bold mt-1">Change photo</span>
               </div>
             </div>
+
+            <input 
+              type="file"
+              ref={fileInputRef}
+              onChange={handleFileChange}
+              accept="image/*"
+              className="hidden"
+            />
+
+            <button
+              id="upload-custom-avatar-btn"
+              onClick={() => fileInputRef.current?.click()}
+              className="flex items-center gap-1.5 px-3.5 py-1.5 border border-[#00FF9C]/30 hover:border-[#00FF9C] text-[#00FF9C] rounded-xl font-mono text-[10px] uppercase tracking-widest bg-emerald-950/20 hover:bg-emerald-950/40 transition cursor-pointer"
+            >
+              <Image className="w-3.5 h-3.5" />
+              <span>{uploadingImage ? "Loading file..." : "Gallery Upload"}</span>
+            </button>
 
             {/* Change Avatar Preset Keys */}
             <div>
