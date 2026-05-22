@@ -995,7 +995,7 @@ class CallService {
       'type': callType,
       'status': 'ringing', // dialing -> ringing -> connected -> ended
       'channelName': 'agora_\${callId}',
-      'token': 'mock_token_for_instant_connect_or_fetch_from_api', 
+      'token': 'AdpetEZWPu5ZTOu14nuvcxKGzKKDsnb7fenZQXfRyAQP5n0laEzyX9qN01aADH6El1Nm7EY8cRQppHYGe_aKMVUp_3pYUI3G1bLWXnLfwVIJgNC_h8drfqmMTz7bpWHYwmVpSmIOCsbwiNbGQ4J8ttgMJw', 
       'timestamp': FieldValue.serverTimestamp(),
     };
 

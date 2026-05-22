@@ -110,6 +110,7 @@ export function SettingsPanel({
       return;
     }
 
+    let verifier: any = null;
     try {
       // Ensure the recaptcha-container is configured for phone updates
       let containerElement = document.getElementById('recaptcha-container');
@@ -127,7 +128,7 @@ export function SettingsPanel({
 
       containerElement.innerHTML = ''; // Fresh DOM wrap
 
-      const verifier = new RecaptchaVerifier(auth, containerElement, {
+      verifier = new RecaptchaVerifier(auth, containerElement, {
         size: 'invisible',
         callback: () => {
           console.log("[MAHRAJ Auth PhoneUpdate] Invisible Recaptcha analyzed.");
@@ -141,7 +142,6 @@ export function SettingsPanel({
       setIsVerifying(false);
       setPhoneOtpNotification(`[SMS_GATEWAY] Verification PIN dispatched to ${formattedNewPhone}`);
     } catch (error: any) {
-      console.error("Firebase Phone Update Error:", error);
       const errorMsg = error.message || String(error);
       const isBillingDisabled = 
         errorMsg.toLowerCase().includes("billing-not-enabled") || 
@@ -153,7 +153,16 @@ export function SettingsPanel({
           error.code.includes("quota-exceeded")
         ));
 
+      if (verifier && typeof verifier.clear === "function") {
+        try {
+          verifier.clear();
+        } catch (e) {
+          console.warn("Recaptcha verifier error cleanup warning:", e);
+        }
+      }
+
       if (isBillingDisabled) {
+        console.warn("Firebase Phone Auth: SMS dispatch limits or billing is disabled for updates. Enabling simulated update path.");
         onSetForceMockMode(true);
         // Fallback to high-fidelity simulated transition
         const mockCode = Math.floor(100000 + Math.random() * 900000).toString();
@@ -167,6 +176,7 @@ export function SettingsPanel({
           type: "warning"
         });
       } else {
+        console.error("Firebase Phone Update Connection Alert:", error);
         setPhoneSystemAlert({
           title: "Transmission Failed",
           message: `Verification request failed: ${errorMsg}`,

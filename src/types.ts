@@ -62,4 +62,6 @@ export interface CallLog {
   status: "missed" | "completed" | "initiated" | "declined" | "ringing" | "connected";
   timestamp: string;
   duration?: number;
+  token?: string;
+  channelName?: string;
 }

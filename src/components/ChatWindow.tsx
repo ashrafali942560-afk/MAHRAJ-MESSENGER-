@@ -309,15 +309,30 @@ export function ChatWindow({
       {/* Messages Scroll Zone with authentic modern green wallpaper touch */}
       <div className="flex-1 overflow-y-auto p-4 space-y-3.5 flex flex-col scrollbar-thin bg-[#050505] relative">
         
-        {/* Subtle background tile mask */}
-        <div className="absolute inset-0 opacity-[0.03] pointer-events-none bg-[radial-gradient(#00ff9c_1.5px,transparent_1.5px)] [background-size:16px_16px]"></div>
+        {/* Stunning high-definition moon background wallpaper */}
+        <div className="absolute inset-0 pointer-events-none overflow-hidden bg-black select-none">
+          <img 
+            src="/src/assets/images/moon_black_4k_1779460318766.png" 
+            alt="Celestial Moon Wallpaper" 
+            referrerPolicy="no-referrer"
+            className="w-full h-full object-cover opacity-20 object-center"
+          />
+          <div className="absolute inset-0 bg-gradient-to-b from-black/80 via-transparent to-black/90" />
+        </div>
 
         {messages.length === 0 ? (
-          <div className="my-auto py-12 text-center text-gray-500 font-mono text-xs flex flex-col items-center gap-2 relative z-10">
-            <div className="w-12 h-12 rounded-full border border-white/5 bg-[#0A0A0A] flex items-center justify-center">
-              🔐
+          <div className="my-auto py-12 text-center text-gray-500 font-mono text-xs flex flex-col items-center gap-4 relative z-10 select-none">
+            <div className="w-40 h-40 rounded-full border border-white/10 bg-black overflow-hidden shadow-[0_0_40px_rgba(255,255,255,0.08)] flex items-center justify-center animate-pulse">
+              <img 
+                src="/src/assets/images/moon_black_4k_1779460318766.png" 
+                alt="Moon Element" 
+                referrerPolicy="no-referrer"
+                className="w-full h-full object-cover"
+              />
             </div>
-            <span>{t("unlocked_channel")}</span>
+            <p className="text-[10px] text-gray-400 tracking-widest font-mono uppercase">
+              Start Chat Transmission
+            </p>
           </div>
         ) : (
           messages.map((m) => {

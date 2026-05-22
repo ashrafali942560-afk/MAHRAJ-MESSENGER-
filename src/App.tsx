@@ -33,6 +33,7 @@ import {
   createChat,
   listenMessages,
   listenStatuses,
+  deleteStatusStory,
   listenActiveCalls,
   initiateCall,
   updateCallStatus,
@@ -53,8 +54,17 @@ export default function App() {
   
   // Database status configs
   const [init, setInit] = useState(false);
+  const [showSplash, setShowSplash] = useState(true);
   const [userId, setUserId] = useState<string | null>(null);
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
+
+  // Splash Screen automatic duration timer
+  useEffect(() => {
+    const splashTimer = setTimeout(() => {
+      setShowSplash(false);
+    }, 2800);
+    return () => clearTimeout(splashTimer);
+  }, []);
   
   // Login inputs
   const [phone, setPhone] = useState("+91 ");
@@ -267,8 +277,6 @@ export default function App() {
       
       setTimeout(() => setOtpNotification(null), 7000);
     } catch (error: any) {
-      console.error("Firebase Phone Auth Error:", error);
-      
       const errorMsg = error.message || String(error);
       const isBillingDisabled = 
         errorMsg.toLowerCase().includes("billing-not-enabled") || 
@@ -283,6 +291,20 @@ export default function App() {
       const isInvalidOrShort = errorMsg.includes("invalid-phone-number") || isTooShort;
 
       if (isBillingDisabled) {
+        console.warn("Firebase Phone Auth: SMS dispatch limits or billing is disabled. Activating sandbox bypass.");
+        
+        if (window.recaptchaVerifier) {
+          try {
+            const v = window.recaptchaVerifier;
+            window.recaptchaVerifier = null;
+            if (v && typeof v.clear === "function") {
+              v.clear();
+            }
+          } catch (e) {
+            console.warn("Recaptcha error cleanup warn:", e);
+          }
+        }
+
         setForceMockMode(true);
         setSystemBanner({
           title: "Simulation Autoplay Bypass",
@@ -297,7 +319,11 @@ export default function App() {
           setOtpNotification(`[SMS_GATEWAY] MAHRAJ Verification PIN is: ${mockCode}`);
         }, 1200);
         return;
-      } else if (isInvalidOrShort) {
+      } else {
+        console.error("Firebase Phone Auth Connection Alert:", error);
+      }
+
+      if (isInvalidOrShort) {
         setSystemBanner({
           title: "Number Format Block",
           message: "The specified phone number is too short or invalid. Ensure you append your country code (e.g. +91 99999 11111).",
@@ -316,7 +342,9 @@ export default function App() {
         try {
           const v = window.recaptchaVerifier;
           window.recaptchaVerifier = null;
-          v.clear();
+          if (v && typeof v.clear === "function") {
+            v.clear();
+          }
         } catch (e) {
           console.warn("Recaptcha error cleanup warn:", e);
         }
@@ -528,6 +556,59 @@ export default function App() {
     }
   };
 
+  if (showSplash) {
+    return (
+      <div className="min-h-screen bg-[#050505] flex flex-col items-center justify-center font-sans tracking-wide relative overflow-hidden select-none">
+        {/* Ambient neon backdrops */}
+        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[380px] h-[380px] bg-[#00FF9C]/5 rounded-full blur-[90px] pointer-events-none animate-pulse"></div>
+        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[220px] h-[220px] bg-[#00D1FF]/5 rounded-full blur-[70px] pointer-events-none"></div>
+
+        {/* Scan lines & matrix style grids */}
+        <div className="absolute inset-0 bg-[linear-gradient(rgba(18,16,16,0)_50%,_rgba(0,0,0,0.3)_50%),_linear-gradient(90deg,_rgba(0,255,156,0.03),_rgba(0,209,255,0.02),_rgba(0,255,156,0.03))] bg-[size:100%_4px,_6px_100%] pointer-events-none opacity-50"></div>
+
+        {/* Brand container */}
+        <div className="relative z-10 flex flex-col items-center animate-in fade-in zoom-in-95 duration-700">
+          {/* Neon pulsating launcher frame */}
+          <div className="relative w-28 h-28 mb-8 flex items-center justify-center">
+            {/* Double ring ripples */}
+            <div className="absolute inset-0 rounded-3xl border-2 border-[#00FF9C]/20 animate-ping opacity-60" style={{ animationDuration: '2.5s' }}></div>
+            <div className="absolute inset-2 rounded-3xl border border-[#00D1FF]/30 anim-pulse"></div>
+
+            {/* Main high-contrast emblem */}
+            <div className="relative w-20 h-20 bg-black/95 border-2 border-[#00FF9C] rounded-3xl flex items-center justify-center shadow-[0_0_35px_rgba(0,255,156,0.3)] transition-all duration-300">
+              <MessageSquare className="w-10 h-10 text-[#00FF9C] animate-pulse" />
+              {/* Core mini node indicator */}
+              <div className="absolute -bottom-1 -right-1 w-4.5 h-4.5 bg-[#00D1FF] rounded-full border-2 border-[#050505] flex items-center justify-center shadow-[0_0_12px_rgba(0,209,255,0.9)]">
+                <div className="w-1.5 h-1.5 bg-black rounded-full animate-ping"></div>
+              </div>
+            </div>
+          </div>
+
+          {/* Letter spacing title header */}
+          <h1 className="text-4xl font-extrabold tracking-[0.3em] text-white uppercase text-center pl-[0.3em] relative">
+            M<span className="text-[#00FF9C] drop-shadow-[0_0_8px_rgba(0,255,156,0.6)]">A</span>H<span className="text-[#00D1FF] drop-shadow-[0_0_8px_rgba(0,209,255,0.6)]">R</span>AJ
+          </h1>
+
+          <div className="mt-3.5 h-[2px] w-28 bg-gradient-to-r from-transparent via-[#00FF9C]/80 to-transparent relative overflow-hidden">
+            <div className="absolute top-0 left-0 h-full w-1/2 bg-[#00D1FF] animate-bounce" style={{ animationDuration: '2.2s' }}></div>
+          </div>
+
+          <p className="mt-4 text-[10px] font-mono text-gray-500 uppercase tracking-[0.45em] animate-pulse">
+            {t("tagline") || "SECURE QUANTUM LINK"}
+          </p>
+        </div>
+
+        {/* Bottom system ready badge */}
+        <div className="absolute bottom-12 left-0 right-0 text-center z-10">
+          <div className="inline-flex items-center gap-2.5 px-4 py-1.5 bg-[#0A0A0A]/90 border border-white/5 rounded-full shadow-[0_4px_12px_rgba(0,0,0,0.5)]">
+            <div className="w-2 h-2 rounded-full bg-[#00FF9C] animate-ping"></div>
+            <span className="text-[9px] font-mono tracking-widest text-[#00FF9C] uppercase font-bold">SYSTEM ONLINE</span>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   if (!init) {
     return (
       <div className="min-h-screen bg-[#050505] flex items-center justify-center font-mono text-xs text-[#00FF9C]">
@@ -547,7 +628,6 @@ export default function App() {
     }
     return (
       <div className="min-h-screen bg-[#050505] flex flex-col justify-center items-center px-4 py-8 font-sans transition-all duration-300">
-        <div id="recaptcha-container" style={{ position: 'absolute', opacity: 0, pointerEvents: 'none', width: '1px', height: '1px', overflow: 'hidden' }}></div>
         
         {otpNotification && (
           <div id="sms-popover" className="fixed top-4 left-4 right-4 z-50 bg-[#0A0A0A] border-l-4 border-[#00FF9C] p-4 rounded-lg shadow-[0_10px_30px_rgba(0,0,0,0.9)] animate-bounce flex items-center justify-between border border-[#00FF9C]/20">
@@ -777,7 +857,6 @@ export default function App() {
   // --- MAIN LAYOUT CONSOLE -- BENTO ADAPTIVE DUAL SPLIT INTERFACE ---
   return (
     <div className="min-h-screen bg-[#050505] text-[#C5C6C7] flex flex-col font-sans transition-all duration-300 relative">
-      <div id="recaptcha-container" style={{ position: 'absolute', opacity: 0, pointerEvents: 'none', width: '1px', height: '1px', overflow: 'hidden' }}></div>
       
       {/* Incoming Ringing Voice/Video Signal overlay */}
       {activeCall && (
@@ -1201,6 +1280,13 @@ export default function App() {
                 currentUserId={userId || ""}
                 currentUserName={userProfile?.displayName || "User"}
                 currentUserAvatar={userProfile?.photoURL || AVATAR_PRESETS[0]}
+                onDeleteStatus={async (id) => {
+                  try {
+                    await deleteStatusStory(id);
+                  } catch (e) {
+                    console.error("Failed to delete status:", e);
+                  }
+                }}
               />
             )}
 

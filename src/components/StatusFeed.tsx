@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { Plus, User, FileText, Image, Film, Clock, ChevronRight, X } from "lucide-react";
+import { Plus, User, FileText, Image, Film, Clock, ChevronRight, X, Trash2 } from "lucide-react";
 import { StatusStory } from "../types";
 import { addStatusStory } from "../lib/state";
 
@@ -8,13 +8,15 @@ interface StatusFeedProps {
   currentUserId: string;
   currentUserName: string;
   currentUserAvatar: string;
+  onDeleteStatus?: (storyId: string) => Promise<void>;
 }
 
 export function StatusFeed({
   statuses,
   currentUserId,
   currentUserName,
-  currentUserAvatar
+  currentUserAvatar,
+  onDeleteStatus
 }: StatusFeedProps) {
   const [activeStoryGroup, setActiveStoryGroup] = useState<StatusStory[] | null>(null);
   const [activeStoryIdx, setActiveStoryIdx] = useState(0);
@@ -276,12 +278,34 @@ export function StatusFeed({
               </div>
             </div>
             
-            <button
-              onClick={() => setActiveStoryGroup(null)}
-              className="w-8 h-8 rounded-full border border-white/5 bg-gray-950 flex items-center justify-center text-gray-400 hover:text-white"
-            >
-              <X className="w-4 h-4" />
-            </button>
+            <div className="flex items-center gap-2">
+              {activeStoryGroup[activeStoryIdx].userId === currentUserId && onDeleteStatus && (
+                <button
+                  id="delete-story-btn"
+                  title="Delete Status"
+                  onClick={async () => {
+                    const idToDelete = activeStoryGroup[activeStoryIdx].id;
+                    await onDeleteStatus(idToDelete);
+                    if (activeStoryGroup.length <= 1) {
+                      setActiveStoryGroup(null);
+                    } else {
+                      const updatedGroup = activeStoryGroup.filter(s => s.id !== idToDelete);
+                      setActiveStoryGroup(updatedGroup);
+                      setActiveStoryIdx(0);
+                    }
+                  }}
+                  className="w-8 h-8 rounded-full border border-red-500/30 bg-red-950/10 hover:bg-red-500/20 text-red-400 hover:text-red-350 flex items-center justify-center transition"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                </button>
+              )}
+              <button
+                onClick={() => setActiveStoryGroup(null)}
+                className="w-8 h-8 rounded-full border border-white/5 bg-gray-950 flex items-center justify-center text-gray-400 hover:text-white"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
           </div>
 
           {/* Core Content Area */}

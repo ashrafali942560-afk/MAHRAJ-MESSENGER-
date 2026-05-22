@@ -19,6 +19,7 @@ import {
   setDoc, 
   addDoc, 
   updateDoc, 
+  deleteDoc,
   onSnapshot, 
   getDoc, 
   getDocs, 
@@ -347,9 +348,9 @@ export async function sendMessage(
         messageText: text,
         text, // keep for UI compatibility
         timestamp,
-        messageType: mediaUrl ? "image" : "text",
-        mediaType: mediaUrl ? "image" : "text", // keep for UI compatibility
-        mediaUrl,
+        messageType: mediaUrl ? (mediaType || "image") : "text",
+        mediaType: mediaUrl ? (mediaType || "image") : "text", // keep for UI compatibility
+        mediaUrl: mediaUrl || "",
         chatId,
         status: "sent"
       });
@@ -566,9 +567,9 @@ export async function sendGroupMessage(
         senderId,
         text,
         messageText: text,
-        mediaUrl,
-        mediaType: mediaUrl ? "image" : "text",
-        messageType: mediaUrl ? "image" : "text",
+        mediaUrl: mediaUrl || "",
+        mediaType: mediaUrl ? (mediaType || "image") : "text",
+        messageType: mediaUrl ? (mediaType || "image") : "text",
         timestamp,
         status: "sent"
       });
@@ -627,6 +628,8 @@ export function updateMessageStatuses(chatId: string, currentUserId: string) {
 
 // --- STATUS/STORIES OPERATIONS ---
 export function listenStatuses(onUpdate: (statuses: StatusStory[]) => void): () => void {
+  const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+
   if (!isMockFirebase) {
     const path = "statuses";
     const q = query(
@@ -635,8 +638,17 @@ export function listenStatuses(onUpdate: (statuses: StatusStory[]) => void): () 
     );
     return onSnapshot(q, (snapshot) => {
       const stories: StatusStory[] = [];
-      snapshot.forEach((doc) => {
-        stories.push(doc.data() as StatusStory);
+      snapshot.forEach((snapshotDoc) => {
+        const item = snapshotDoc.data() as StatusStory;
+        const storyTime = new Date(item.timestamp).getTime();
+        if (storyTime < cutoff) {
+          // Asynchronously delete from Firebase DB as it is older than 24 hours
+          deleteDoc(doc(db, "statuses", item.id)).catch(err => {
+            console.warn("Auto-purged status clean error:", err);
+          });
+        } else {
+          stories.push(item);
+        }
       });
       onUpdate(stories);
     }, (error) => {
@@ -644,7 +656,14 @@ export function listenStatuses(onUpdate: (statuses: StatusStory[]) => void): () 
     });
   } else {
     const loadAndEmit = () => {
-      onUpdate(getLocal<StatusStory[]>("stories", []));
+      const allStories = getLocal<StatusStory[]>("stories", []);
+      const activeStories = allStories.filter(story => {
+        return new Date(story.timestamp).getTime() >= cutoff;
+      });
+      if (activeStories.length !== allStories.length) {
+        setLocal("stories", activeStories);
+      }
+      onUpdate(activeStories);
     };
 
     loadAndEmit();
@@ -676,6 +695,23 @@ export async function addStatusStory(story: Omit<StatusStory, "id" | "timestamp"
     const stories = getLocal<StatusStory[]>("stories", []);
     stories.unshift(newStory); // prepend
     setLocal("stories", stories);
+    window.dispatchEvent(new Event("storage_sync_stories"));
+  }
+}
+
+export async function deleteStatusStory(storyId: string) {
+  if (!isMockFirebase) {
+    const path = `statuses/${storyId}`;
+    try {
+      await deleteDoc(doc(db, "statuses", storyId));
+    } catch (e) {
+      handleFirestoreError(e, OperationType.WRITE, path);
+    }
+  } else {
+    const stories = getLocal<StatusStory[]>("stories", []);
+    const updated = stories.filter(s => s.id !== storyId);
+    setLocal("stories", updated);
+    window.dispatchEvent(new Event("storage_sync_stories"));
   }
 }
 
@@ -736,7 +772,9 @@ export async function initiateCall(
     receiverName,
     type,
     status: "ringing",
-    timestamp: new Date().toISOString()
+    timestamp: new Date().toISOString(),
+    token: "AdpetEZWPu5ZTOu14nuvcxKGzKKDsnb7fenZQXfRyAQP5n0laEzyX9qN01aADH6El1Nm7EY8cRQppHYGe_aKMVUp_3pYUI3G1bLWXnLfwVIJgNC_h8drfqmMTz7bpWHYwmVpSmIOCsbwiNbGQ4J8ttgMJw",
+    channelName: `agora_${callId}`
   };
 
   if (!isMockFirebase) {
