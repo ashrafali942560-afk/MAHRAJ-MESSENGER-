@@ -1,15 +1,20 @@
 import React, { useState, useEffect, useRef } from "react";
 import { 
-  Search, User, Sparkles, MessageSquare, ArrowLeft, Phone, 
-  Smartphone, Loader2, Check, Share2, Database, UserPlus, X 
+  Search, User, Sparkles, MessageSquare, ArrowLeft,
+  Smartphone, Loader2, Check, Share2, Database, UserPlus, X, Trash2,
+  UserCheck, UserX, Clock, CheckCircle
 } from "lucide-react";
-import { UserProfile } from "../types";
+import { UserProfile, FriendRequest } from "../types";
 import { 
-  findUserByPhone, 
-  SyncedContact, 
-  getSyncedContactsLocal, 
-  saveSyncedContactsLocal 
+  findUserByUsername,
+  deleteUserProfile,
+  sendFriendRequest,
+  acceptFriendRequest,
+  declineFriendRequest,
+  listenFriendRequests,
+  getActiveLocalUser
 } from "../lib/state";
+import { auth } from "../firebase";
 
 interface ContactSelectorProps {
   contacts: UserProfile[];
@@ -27,183 +32,141 @@ export function ContactSelector({
   activeChatPartnerIds = []
 }: ContactSelectorProps) {
   const [search, setSearch] = useState("");
-  const [activeTab, setActiveTab] = useState<"all" | "synced">("all");
+  const [activeTab, setActiveTab] = useState<"all" | "username">("all");
 
-  // Phone search states
-  const [phoneSearchResult, setPhoneSearchResult] = useState<UserProfile | null>(null);
-  const [phoneSearchState, setPhoneSearchState] = useState<"idle" | "searching" | "found" | "not_found" | "error">("idle");
-  const searchTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  // Friend Requests Tracking
+  const [friendRequests, setFriendRequests] = useState<FriendRequest[]>([]);
 
-  // Syncing states
-  const [syncedContacts, setSyncedContacts] = useState<SyncedContact[]>([]);
-  const [isSyncing, setIsSyncing] = useState(false);
-  const [syncStep, setSyncStep] = useState("");
+  // Username search states
+  const [usernameSearch, setUsernameSearch] = useState("");
+  const [usernameSearchResult, setUsernameSearchResult] = useState<UserProfile | null>(null);
+  const [usernameSearchState, setUsernameSearchState] = useState<"idle" | "searching" | "found" | "not_found" | "error">("idle");
+  const usernameSearchTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
-  // Load previously synced contacts on mount
+  // Optimized real-time search states for the main search input
+  const [globalSearchResult, setGlobalSearchResult] = useState<UserProfile | null>(null);
+  const [globalSearchState, setGlobalSearchState] = useState<"idle" | "searching" | "found" | "not_found" | "error">("idle");
+  const globalSearchTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Optimized real-time global profile lookup for the main search bar
   useEffect(() => {
-    const saved = getSyncedContactsLocal();
-    setSyncedContacts(saved);
-  }, []);
-
-  // Helper to normalize and check if query is primary numeric
-  const isNumericQuery = (queryStr: string) => {
-    const cleaned = queryStr.replace(/[^\d+]/g, "");
-    return cleaned.length >= 3;
-  };
-
-  // Debounced phone-lookup directly against Firestore or simulated local fallback
-  useEffect(() => {
-    if (searchTimeoutRef.current) {
-      clearTimeout(searchTimeoutRef.current);
+    if (globalSearchTimeoutRef.current) {
+      clearTimeout(globalSearchTimeoutRef.current);
     }
 
-    const trimmed = search.trim();
-    if (!trimmed || !isNumericQuery(trimmed)) {
-      setPhoneSearchResult(null);
-      setPhoneSearchState("idle");
+    const trimmed = search.trim().toLowerCase().replace("@", "");
+    if (!trimmed || trimmed.length < 2) {
+      setGlobalSearchResult(null);
+      setGlobalSearchState("idle");
       return;
     }
 
-    setPhoneSearchState("searching");
-    searchTimeoutRef.current = setTimeout(async () => {
+    setGlobalSearchState("searching");
+    globalSearchTimeoutRef.current = setTimeout(async () => {
       try {
-        const found = await findUserByPhone(trimmed);
+        const found = await findUserByUsername(trimmed);
         if (found && found.uid !== currentUserId) {
-          setPhoneSearchResult(found);
-          setPhoneSearchState("found");
+          setGlobalSearchResult(found);
+          setGlobalSearchState("found");
         } else {
-          setPhoneSearchResult(null);
-          // Only flag not_found if the query has significant digits to represent a phone destination
-          if (trimmed.replace(/[^\d]/g, "").length >= 5) {
-            setPhoneSearchState("not_found");
+          setGlobalSearchResult(null);
+          setGlobalSearchState("not_found");
+        }
+      } catch (err) {
+        console.error("Failed to query user by username in main search:", err);
+        setGlobalSearchState("error");
+      }
+    }, 300); // Fast 300ms debounce
+
+    return () => {
+      if (globalSearchTimeoutRef.current) clearTimeout(globalSearchTimeoutRef.current);
+    };
+  }, [search, currentUserId]);
+
+  // Listen to Friend Requests
+  useEffect(() => {
+    const unsub = listenFriendRequests(currentUserId, (list) => {
+      setFriendRequests(list);
+    });
+    return unsub;
+  }, [currentUserId]);
+
+  const getSenderDetails = () => {
+    const localUser = getActiveLocalUser();
+    if (localUser) return localUser;
+    
+    // Fallback if live firebase is authenticated but profile isn't in local storage yet
+    const liveUser = auth.currentUser;
+    return {
+      uid: currentUserId,
+      displayName: liveUser?.displayName || "MAHRAJ User",
+      photoURL: liveUser?.photoURL || "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&q=80&w=200",
+      phone: "",
+      isOnline: true,
+      bio: "Available on MAHRAJ"
+    };
+  };
+
+  // Debounced username lookup directly against Firestore or simulated local fallback
+  useEffect(() => {
+    if (usernameSearchTimeoutRef.current) {
+      clearTimeout(usernameSearchTimeoutRef.current);
+    }
+
+    const trimmed = usernameSearch.trim().toLowerCase().replace("@", "");
+    if (!trimmed || trimmed.length < 2) {
+      setUsernameSearchResult(null);
+      setUsernameSearchState("idle");
+      return;
+    }
+
+    setUsernameSearchState("searching");
+    usernameSearchTimeoutRef.current = setTimeout(async () => {
+      try {
+        const found = await findUserByUsername(trimmed);
+        if (found && found.uid !== currentUserId) {
+          setUsernameSearchResult(found);
+          setUsernameSearchState("found");
+        } else {
+          setUsernameSearchResult(null);
+          if (trimmed.length >= 2) {
+            setUsernameSearchState("not_found");
           } else {
-            setPhoneSearchState("idle");
+            setUsernameSearchState("idle");
           }
         }
       } catch (err) {
-        console.error("Failed to query user phone number:", err);
-        setPhoneSearchState("error");
+        console.error("Failed to query user by username:", err);
+        setUsernameSearchState("error");
       }
     }, 450);
 
     return () => {
-      if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current);
+      if (usernameSearchTimeoutRef.current) clearTimeout(usernameSearchTimeoutRef.current);
     };
-  }, [search, currentUserId]);
+  }, [usernameSearch, currentUserId]);
 
-  // E.164 conversion helper
-  const formatToE164 = (phone: string) => {
-    const cleaned = phone.replace(/[^\d+]/g, "");
-    if (cleaned.startsWith("+")) return cleaned;
-    if (cleaned.length === 10) return `+91${cleaned}`;
-    if (cleaned.startsWith("91") && cleaned.length === 12) return `+${cleaned}`;
-    return cleaned;
-  };
+  // Find UIDs of users who have mutual accepted friendship requests
+  const acceptedFriendUids = friendRequests
+    .filter(req => req.status === "accepted")
+    .map(req => req.senderId === currentUserId ? req.receiverId : req.senderId);
 
-  // WhatsApp-Style Native Bridge Contacts Permission & Sync Process
-  const handleRequestContactsSync = async () => {
-    setIsSyncing(true);
-    setSyncStep("Acquiring 'Read Contacts' permission from Android...");
-
-    // Register a global web-hook callback on the window object
-    // When the native App finishes loading, it can run:
-    // window.onAndroidContactsSynced(JSON.stringify([{name: "X", phone: "Y"}]))
-    (window as any).onAndroidContactsSynced = async (contactsJson: string) => {
-      setSyncStep("Contacts received. Formulating secure E.164 structures...");
-      try {
-        const contactsList = JSON.parse(contactsJson) as Array<{ name: string; phone: string }>;
-        
-        // Match numbers in Firestore database
-        const checkedContacts: SyncedContact[] = [];
-        let index = 0;
-        
-        for (const contact of contactsList) {
-          setSyncStep(`Matching ${contact.name} (${index + 1}/${contactsList.length}) against node...`);
-          const e164 = formatToE164(contact.phone);
-          const foundProfile = await findUserByPhone(e164);
-          
-          checkedContacts.push({
-            name: contact.name,
-            phone: e164,
-            isRegistered: !!foundProfile,
-            profile: foundProfile || undefined
-          });
-          index++;
-        }
-
-        saveSyncedContactsLocal(checkedContacts);
-        setSyncedContacts(checkedContacts);
-        setSyncStep("Sync finished flawlessly.");
-        setTimeout(() => setIsSyncing(false), 800);
-      } catch (err) {
-        console.error("Contact parsing failed:", err);
-        setSyncStep("Mismatch or malformed contacts payload.");
-        setTimeout(() => setIsSyncing(false), 2000);
-      }
-    };
-
-    // If native platform exists, invoke it
-    if ((window as any).AndroidInterface && typeof (window as any).AndroidInterface.requestContacts === "function") {
-      try {
-        (window as any).AndroidInterface.requestContacts();
-        return;
-      } catch (e) {
-        console.warn("Android native invocation error, starting simulation fallback", e);
-      }
-    }
-
-    // Fallback/Web simulation if native bridge is absent
-    await new Promise(resolve => setTimeout(resolve, 1000));
-    setSyncStep("Reading client address book contacts...");
-    await new Promise(resolve => setTimeout(resolve, 800));
-    
-    const mockPhonebook = [
-      { name: "Syed Ashraf (CEO)", phone: "+91 91111 88888" },
-      { name: "Zoya Khan (Design)", phone: "+91 77777 55555" },
-      { name: "Piyush Dev (Flutter)", phone: "98888 77777" },
-      { name: "Aditi Sharma", phone: "+91 88888 88888" },
-      { name: "Raj Malhotra", phone: "90000 12345" }
-    ];
-
-    const checkedContacts: SyncedContact[] = [];
-    for (let idx = 0; idx < mockPhonebook.length; idx++) {
-      const contact = mockPhonebook[idx];
-      setSyncStep(`Comparing ${contact.name} (${idx + 1}/${mockPhonebook.length}) in Firestore database...`);
-      await new Promise(resolve => setTimeout(resolve, 400));
-      const e164 = formatToE164(contact.phone);
-      const foundProfile = await findUserByPhone(e164);
-
-      checkedContacts.push({
-        name: contact.name,
-        phone: e164,
-        isRegistered: !!foundProfile,
-        profile: foundProfile || undefined
-      });
-    }
-
-    saveSyncedContactsLocal(checkedContacts);
-    setSyncedContacts(checkedContacts);
-    setSyncStep("All contacts linked successfully!");
-    await new Promise(resolve => setTimeout(resolve, 600));
-    setIsSyncing(false);
-  };
-
-  // Filter existing registered contacts for general list (matches searches)
-  const normalizePhone = (phoneStr: string) => {
-    return phoneStr.replace(/[^0-9+]/g, "");
+  const isFriend = (uid: string) => {
+    return uid === "ai-bot" || acceptedFriendUids.includes(uid);
   };
 
   const filteredLocal = contacts.filter(contact => {
     if (contact.uid === currentUserId) return false;
-    const normSearch = normalizePhone(search);
-    const normPhone = normalizePhone(contact.phone);
-    
-    const matchesName = contact.displayName.toLowerCase().includes(search.toLowerCase());
-    const matchesPhone = normSearch.length > 2 
-      ? normPhone.includes(normSearch) 
-      : contact.phone.toLowerCase().includes(search.toLowerCase());
       
-    return matchesName || matchesPhone;
+    const matchesName = contact.displayName.toLowerCase().includes(search.toLowerCase());
+    const matchesUsername = contact.username
+      ? contact.username.toLowerCase().includes(search.toLowerCase())
+      : false;
+    const matchesEmail = contact.email
+      ? contact.email.toLowerCase().includes(search.toLowerCase())
+      : false;
+      
+    return matchesName || matchesUsername || matchesEmail;
   });
 
   return (
@@ -216,9 +179,9 @@ export function ContactSelector({
           </button>
           <div>
             <h2 className="text-sm font-bold tracking-wider uppercase text-white font-mono flex items-center gap-2">
-              <Smartphone className="w-4 h-4 text-[#00FF9C]" /> Contact Discovery
+              <Smartphone className="w-4 h-4 text-[#00FF9C]" /> Profile Discover
             </h2>
-            <p className="text-xxs text-[#00FF9C] font-mono">Zero-trust registration & invitation layers</p>
+            <p className="text-xxs text-[#00FF9C] font-mono">Search and connect across the network</p>
           </div>
         </div>
 
@@ -237,14 +200,14 @@ export function ContactSelector({
           </button>
           <button 
             id="tab-synced-contacts"
-            onClick={() => setActiveTab("synced")}
+            onClick={() => setActiveTab("username")}
             className={`px-3 py-1 font-mono text-[9px] tracking-wider uppercase rounded-lg transition-all duration-200 flex items-center gap-1.5 ${
-              activeTab === "synced" 
+              activeTab === "username" 
                 ? "bg-[#00D1FF]/15 border border-[#00D1FF]/30 text-[#00D1FF] font-bold" 
                 : "text-gray-500 hover:text-white border border-transparent"
             }`}
           >
-            Phonebook Sync
+            Username Search
           </button>
         </div>
       </div>
@@ -259,10 +222,10 @@ export function ContactSelector({
                 type="text"
                 value={search}
                 onChange={e => setSearch(e.target.value)}
-                placeholder="Search by name, plus code, or E.164 phone..."
-                className="w-full bg-[#050505] border border-white/5 rounded-lg py-2.5 pl-9 pr-8 text-xs text-white focus:outline-none focus:border-[#00FF9C] font-mono placeholder-gray-700"
+                placeholder="Search active, or enter a username to search network..."
+                className="w-full bg-[#050505] border border-white/10 rounded-xl py-2.5 pl-9 pr-8 text-xs text-white focus:outline-none focus:border-[#00FF9C] font-mono placeholder-gray-600 shadow-[inset_0_2px_4px_rgba(0,0,0,0.6)]"
               />
-              <Search className="w-4 h-4 text-gray-600 absolute left-3 top-3.5" />
+              <Search className="w-4 h-4 text-gray-500 absolute left-3 top-3.5" />
               {search && (
                 <button 
                   onClick={() => setSearch("")} 
@@ -276,69 +239,152 @@ export function ContactSelector({
 
           <div className="flex-1 overflow-y-auto p-2 bg-[#050505] space-y-3">
             
-            {/* 1. FIRESTORE EXPLICIT LOOKUP RESULTS (if input is numeric/phone digits) */}
-            {phoneSearchState !== "idle" && (
-              <div id="firestore-lookup-panel" className="bg-[#0E0E0E] border-2 border-[#00FF9C]/20 rounded-2xl p-4 mx-1 mt-1 space-y-3 shadow-[0_4px_25px_rgba(0,255,156,0.03)] animate-fadeIn">
-                <div className="flex items-center justify-between border-b border-white/5 pb-2">
-                  <span className="text-[9px] font-mono text-[#00FF9C] uppercase tracking-widest flex items-center gap-1.5 font-bold">
-                    <Database className="w-3 h-3 animate-pulse" /> Firestore Phone Matching Inquiry
+            {/* 1.5 PENDING INCOMING REQUESTS LIST */}
+            {(() => {
+              const pendingRequests = friendRequests.filter(r => r.receiverId === currentUserId && r.status === "pending");
+              if (pendingRequests.length === 0) return null;
+              return (
+                <div id="pending-requests-section" className="space-y-2 p-1 border-b border-white/5 pb-4 mb-2">
+                  <span className="text-[10px] font-mono text-orange-400 uppercase tracking-widest block pl-1.5 pb-1 flex items-center gap-1.5 font-bold">
+                    <Clock className="w-3.5 h-3.5 animate-pulse" /> Pending Friend Requests ({pendingRequests.length})
                   </span>
-                  <span className="text-xxs px-1.5 py-0.5 bg-black rounded-md font-mono text-gray-550 border border-white/5">E.164 index lookup</span>
-                </div>
-
-                {phoneSearchState === "searching" && (
-                  <div className="flex items-center gap-2.5 py-4 justify-center text-gray-400 font-mono text-xs">
-                    <Loader2 className="w-4 h-4 text-[#00FF9C] animate-spin" />
-                    <span>Verifying user status for "{formatToE164(search)}"</span>
-                  </div>
-                )}
-
-                {phoneSearchState === "found" && phoneSearchResult && (
-                  <div className="flex items-center justify-between bg-black/60 rounded-xl p-3 border border-[#00FF9C]/30 transition hover:border-[#00FF9C]/50">
-                    <div className="flex items-center gap-3">
-                      <div className="relative">
+                  {pendingRequests.map(req => (
+                    <div key={req.id} className="flex items-center justify-between p-3 rounded-2xl bg-orange-950/10 border border-orange-500/20 shadow-[0_4px_15px_rgba(249,115,22,0.02)]">
+                      <div className="flex items-center gap-3">
                         <img 
-                          src={phoneSearchResult.photoURL} 
-                          alt={phoneSearchResult.displayName} 
-                          className="w-10 h-10 rounded-full object-cover border border-[#00FF9C]/20" 
+                          src={req.senderPhotoURL} 
+                          alt={req.senderName} 
+                          className="w-10 h-10 rounded-full object-cover border border-orange-500/20" 
                         />
-                        {phoneSearchResult.isOnline && (
-                          <span className="absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full bg-[#00FF9C] border-2 border-[#0A0A0A] animate-pulse" />
-                        )}
+                        <div>
+                          <h4 className="text-xs font-bold text-white font-mono tracking-wide uppercase">{req.senderName}</h4>
+                          <p className="text-[9px] text-orange-400 font-mono">Wants to chat with you</p>
+                        </div>
                       </div>
-                      <div>
-                        <h4 className="text-xs font-bold font-mono text-white tracking-wide uppercase">{phoneSearchResult.displayName}</h4>
-                        <p className="text-[10px] text-gray-400 font-semibold truncate max-w-[130px] font-sans">{phoneSearchResult.bio}</p>
-                        <p className="text-xxs text-[#00FF9C] font-mono font-medium mt-0.5">{phoneSearchResult.phone}</p>
+                      <div className="flex gap-1.5 shrink-0 pl-1">
+                        <button
+                          id={`btn-accept-${req.id}`}
+                          onClick={async () => {
+                            await acceptFriendRequest(req.id);
+                          }}
+                          className="px-2.5 py-1.5 bg-[#00FF9C] hover:bg-emerald-400 text-black font-bold rounded-lg text-[9px] font-mono uppercase tracking-wider flex items-center gap-1 transition-all"
+                        >
+                          <Check className="w-3.5 h-3.5" /> Accept
+                        </button>
+                        <button
+                          id={`btn-decline-${req.id}`}
+                          onClick={async () => {
+                            await declineFriendRequest(req.id);
+                          }}
+                          className="px-2 py-1.5 bg-red-950/20 border border-red-500/30 text-red-400 hover:text-red-550 rounded-lg text-[9px] font-mono uppercase transition"
+                        >
+                          Decline
+                        </button>
                       </div>
                     </div>
+                  ))}
+                </div>
+              );
+            })()}
 
-                    <button
-                      id="start-chat-discovered-btn"
-                      onClick={() => onSelectContact(phoneSearchResult.uid)}
-                      className="px-3.5 py-2 bg-gradient-to-r from-[#00FF9C] to-[#00D1FF] hover:opacity-90 active:scale-95 text-black font-semibold rounded-xl text-[10px] font-mono tracking-wider uppercase transition flex items-center gap-1.5 shadow-[0_2px_10px_rgba(0,255,156,0.3)] cursor-pointer"
-                    >
-                      <MessageSquare className="w-3.5 h-3.5" /> Start Chat
-                    </button>
+            {/* Real-time Global Search Match Engine inside main view */}
+            {globalSearchState !== "idle" && (
+              <div id="global-realtime-search-container" className="p-1 space-y-1.5 border-b border-white/5 pb-4 mb-2">
+                <span className="text-[10px] font-mono text-[#00D1FF] uppercase tracking-widest block pl-1.5 pb-1 flex items-center gap-1.5 font-bold">
+                  <Database className="w-3.5 h-3.5 animate-pulse" /> Real-time Network Search
+                </span>
+
+                {globalSearchState === "searching" && (
+                  <div className="flex items-center gap-2 py-3 justify-center text-gray-500 font-mono text-xxs bg-black/40 rounded-xl border border-white/5">
+                    <Loader2 className="w-3.5 h-3.5 text-[#00D1FF] animate-spin" />
+                    <span>Searching directory for "@{search}"...</span>
                   </div>
                 )}
 
-                {phoneSearchState === "not_found" && (
-                  <div className="p-3 bg-red-950/10 border-2 border-dashed border-red-500/20 rounded-xl text-center space-y-2 py-4">
-                    <div className="w-8 h-8 rounded-full bg-red-950/30 flex items-center justify-center text-red-500 mx-auto">⚠️</div>
-                    <p className="text-xs font-bold text-red-400 font-mono tracking-wider">User not found on this app</p>
-                    <p className="text-[10px] text-gray-500 max-w-xs mx-auto leading-normal">
-                      The phone number "<span className="text-white font-mono">{formatToE164(search)}</span>" is not synced with any registration node.
-                    </p>
-                    <button 
-                      onClick={() => {
-                        const smsText = encodeURIComponent("Hey! Join me on MAHRAJ Messenger, the secure neon messaging system. Let's chat securely!");
-                        window.open(`sms:${formatToE164(search)}?body=${smsText}`);
-                      }}
-                      className="px-3 py-1.5 bg-white/5 hover:bg-white/10 text-white rounded-lg font-mono text-[9px] tracking-wider uppercase border border-white/10 mx-auto block transition"
-                    >
-                      💌 Send SMS invitation
-                    </button>
+                {globalSearchState === "found" && globalSearchResult && (() => {
+                  const g = globalSearchResult;
+                  const req = friendRequests.find(r => 
+                    (r.senderId === currentUserId && r.receiverId === g.uid) ||
+                    (r.senderId === g.uid && r.receiverId === currentUserId)
+                  );
+
+                  return (
+                    <div className="flex items-center justify-between p-3 rounded-2xl bg-[#0E0E0E] border-2 border-[#00D1FF]/30 shadow-[0_4px_20px_rgba(0,209,255,0.06)] animate-in fade-in slide-in-from-bottom-2 duration-350">
+                      <div className="flex items-center gap-3">
+                        <div className="relative shrink-0">
+                          <img 
+                            src={g.photoURL} 
+                            alt={g.displayName} 
+                            className="w-10 h-10 rounded-full object-cover border border-[#00D1FF]/20" 
+                          />
+                          {g.isOnline && (
+                            <span className="absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full bg-[#00FF9C] border-2 border-[#0A0A0A] animate-pulse" />
+                          )}
+                        </div>
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-1.5">
+                            <h4 className="text-xs font-bold font-mono text-white tracking-wide uppercase truncate">{g.displayName}</h4>
+                            <span className="text-[8px] font-mono text-[#00D1FF] bg-[#00D1FF]/10 px-1 py-0.5 rounded font-semibold">@{g.username}</span>
+                          </div>
+                          <p className="text-[10px] text-gray-400 font-semibold truncate max-w-[150px] font-sans">{g.bio}</p>
+                        </div>
+                      </div>
+
+                      <div className="shrink-0 pl-1">
+                        {(!req || req.status === "declined") ? (
+                          <button
+                            id="btn-global-send-request"
+                            onClick={async () => {
+                              const me = getSenderDetails();
+                              await sendFriendRequest(
+                                currentUserId, 
+                                me.displayName, 
+                                me.photoURL, 
+                                g.uid, 
+                                g.displayName, 
+                                g.photoURL
+                              );
+                            }}
+                            className="px-3 py-1.5 bg-[#00D1FF] hover:bg-sky-400 text-black font-semibold rounded-lg text-[9px] font-mono uppercase tracking-wider flex items-center gap-1 transition-all"
+                          >
+                            <UserPlus className="w-3.5 h-3.5" /> ADD
+                          </button>
+                        ) : req.status === "pending" ? (
+                          req.senderId === currentUserId ? (
+                            <button
+                              disabled
+                              className="px-2.5 py-1 text-[9px] font-mono uppercase tracking-wide bg-sky-950/20 border border-sky-500/20 text-sky-450 rounded-lg flex items-center gap-1"
+                            >
+                              <Clock className="w-3 h-3 animate-pulse" /> SENT
+                            </button>
+                          ) : (
+                            <div className="flex gap-1">
+                              <button
+                                onClick={async () => {
+                                  await acceptFriendRequest(req.id);
+                                }}
+                                className="px-2 py-1 bg-[#00FF9C] hover:bg-emerald-400 text-black font-bold rounded text-[9px] font-mono uppercase transition flex items-center gap-1"
+                              >
+                                Accept
+                              </button>
+                            </div>
+                          )
+                        ) : (
+                          <button
+                            onClick={() => onSelectContact(g.uid)}
+                            className="px-3 py-1.5 bg-[#00FF9C] text-black font-semibold rounded-lg text-[9px] font-mono tracking-wider uppercase transition flex items-center gap-1"
+                          >
+                            <MessageSquare className="w-3 h-3" /> CHAT
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })()}
+
+                {globalSearchState === "not_found" && (
+                  <div className="p-3 bg-red-950/5 border border-dashed border-red-500/10 rounded-xl text-center">
+                    <p className="text-[10px] text-gray-400 font-mono">No global user node registered under exact username &ldquo;@{search}&rdquo;</p>
                   </div>
                 )}
               </div>
@@ -351,17 +397,15 @@ export function ContactSelector({
               </span>
               
               {filteredLocal.length === 0 ? (
-                phoneSearchState === "idle" && (
-                  <div className="text-center py-16 px-6 text-gray-500 font-mono text-xs max-w-sm mx-auto space-y-4">
-                    <div className="w-12 h-12 bg-[#0A0A0A] border border-orange-500/30 rounded-full flex items-center justify-center text-orange-450 text-lg mx-auto">
-                      📡
-                    </div>
-                    <p className="text-gray-400 uppercase tracking-wider text-xxs font-bold">Unregistered Destination</p>
-                    <p className="normal-case text-gray-500 text-[11px] leading-relaxed">
-                      No registered user matches "<span className="text-[#00FF9C] font-semibold">{search}</span>" in our database.
-                    </p>
+                <div className="text-center py-16 px-6 text-gray-500 font-mono text-xs max-w-sm mx-auto space-y-4">
+                  <div className="w-12 h-12 bg-[#0A0A0A] border border-orange-500/30 rounded-full flex items-center justify-center text-orange-450 text-lg mx-auto">
+                    📡
                   </div>
-                )
+                  <p className="text-gray-400 uppercase tracking-wider text-xxs font-bold font-mono">No Contacts Found</p>
+                  <p className="normal-case text-gray-500 text-[11px] leading-relaxed font-sans">
+                    No active connections match your query. Search and send a request via the Username Search tab.
+                  </p>
+                </div>
               ) : (
                 filteredLocal.map(contact => {
                   const isBot = contact.uid === "ai-bot";
@@ -397,7 +441,9 @@ export function ContactSelector({
                             )}
                           </h4>
                           <p className="text-xxs text-gray-400 font-sans mt-0.5 max-w-[180px] truncate">{contact.bio}</p>
-                          <p className="text-xxs text-[#00FF9C] font-mono mt-0.5">{contact.phone}</p>
+                          <p className="text-xxs text-[#00D1FF] font-mono mt-0.5">
+                            {contact.username ? `@${contact.username}` : contact.email}
+                          </p>
                         </div>
                       </div>
 
@@ -418,6 +464,23 @@ export function ContactSelector({
                             <MessageSquare className="w-3.5 h-3.5 text-[#00FF9C]" />
                           </span>
                         )}
+
+                        {!isBot && (
+                          <button
+                            id={`btn-delete-contact-${contact.uid}`}
+                            type="button"
+                            onClick={async (e) => {
+                              e.stopPropagation();
+                              if (window.confirm(`Are you sure you want to remove ${contact.displayName} from contacts?`)) {
+                                await deleteUserProfile(contact.uid);
+                              }
+                            }}
+                            className="p-2 border border-white/5 hover:border-red-500/40 hover:bg-red-950/25 rounded-full bg-gray-950/50 flex transition text-gray-500 hover:text-red-500 cursor-pointer"
+                            title="Remove Contact"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        )}
                       </div>
                     </div>
                   );
@@ -427,131 +490,174 @@ export function ContactSelector({
           </div>
         </>
       ) : (
-        /* Device Contacts Sync tab */
-        <div className="flex-1 overflow-y-auto p-4 space-y-4 bg-[#050505]">
+        /* Username Search & Friend request System */
+        <div className="flex-1 overflow-y-auto p-4 space-y-4 bg-[#050505] animate-fadeIn">
           
-          <div className="bg-[#0E0E0E] rounded-3xl p-5 border border-[#00D1FF]/25 space-y-4">
-            <div className="flex items-center gap-3">
-              <div className="p-3 bg-[#00D1FF]/10 text-[#00D1FF] border border-[#00D1FF]/30 rounded-2xl">
-                <Smartphone className="w-6 h-6" />
+          {/* Own Profile Info Card */}
+          {(() => {
+            const me = getSenderDetails();
+            // Try to find the actual username from the me object, or use clean fallback
+            const myUsername = me.username || "unset";
+            return (
+              <div className="bg-[#0E0E0E] rounded-3xl p-5 border border-[#00D1FF]/25 space-y-3">
+                <div className="flex items-center gap-3">
+                  <div className="p-2.5 bg-[#00D1FF]/10 text-[#00D1FF] border border-[#00D1FF]/30 rounded-2xl shrink-0">
+                    <User className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h3 className="text-xs font-bold tracking-wider text-white uppercase font-mono">Your Chat node Identity</h3>
+                    <p className="text-[10px] text-[#00D1FF] font-mono">
+                      {myUsername !== "unset" ? `@${myUsername}` : "No username. Create one in Settings!"}
+                    </p>
+                  </div>
+                </div>
+                <p className="text-[11px] text-gray-400 leading-normal font-sans">
+                  Share your username with friends. They can look you up securely to send a chat authorization query. Once you accept, instant message traffic routing begins.
+                </p>
               </div>
-              <div>
-                <h3 className="text-xs font-bold tracking-wider text-white uppercase font-mono">WhatsApp-Style Phonebook Sync</h3>
-                <p className="text-[10px] text-[#00D1FF] font-mono">Check device contacts with registered database</p>
-              </div>
-            </div>
-            
-            <p className="text-[11px] text-gray-450 leading-relaxed">
-              When triggered, the app requests the standard <span className="text-[#00D1FF] font-mono font-bold font-semibold bg-[#00D1FF]/10 px-1 rounded">Read Contacts</span> Android hardware permission. Once granted, phonebook records are normalized to standard E.164 numbers, compared locally and securely via query indices, linking friends directly!
-            </p>
+            );
+          })()}
 
-            {isSyncing ? (
-              <div className="p-4 bg-black/40 border border-[#00D1FF]/20 rounded-2xl flex flex-col items-center gap-3 py-6 justify-center text-center">
-                <Loader2 className="w-6 h-6 text-[#00D1FF] animate-spin" />
-                <p className="font-mono text-[10px] tracking-wider text-white uppercase font-bold animate-pulse">Discovery session live</p>
-                <p className="font-sans text-[11px] text-gray-400 max-w-xs">{syncStep}</p>
-              </div>
-            ) : (
-              <button 
-                id="native-sync-contacts-btn"
-                onClick={handleRequestContactsSync}
-                className="w-full py-3.5 bg-gradient-to-r from-[#00D1FF] to-[#00FF9C] hover:opacity-90 active:scale-98 text-black font-bold uppercase text-[11px] font-mono tracking-widest rounded-2xl shadow-[0_4px_15px_rgba(0,180,255,0.25)] flex items-center justify-center gap-2 cursor-pointer transition-all duration-200"
-              >
-                <Smartphone className="w-4 h-4" /> Discover & Sync Contacts
-              </button>
-            )}
-          </div>
-
-          {/* Sync list display */}
+          {/* Search Input Box */}
           <div className="space-y-3">
-            <div className="flex items-center justify-between px-1">
-              <span className="text-[10px] font-mono text-gray-500 uppercase tracking-widest font-bold">
-                Synced Results ({syncedContacts.length})
-              </span>
-              {syncedContacts.length > 0 && (
+            <span className="text-[10px] font-mono text-gray-500 uppercase tracking-widest font-bold">
+              Secure Username Discovery
+            </span>
+            <div className="relative font-sans">
+              <span className="absolute left-3 top-3 text-[#00D1FF] font-mono text-xs font-bold">@</span>
+              <input
+                id="username-search-field-input"
+                type="text"
+                value={usernameSearch}
+                onChange={e => setUsernameSearch(e.target.value.toLowerCase().replace(/[^a-z0-9_.-]/g, ""))}
+                placeholder="Enter target username..."
+                className="w-full bg-[#0E0E0E] border border-white/5 focus:border-[#00D1FF] rounded-xl py-2.5 pl-8 pr-8 text-xs text-white focus:outline-none font-mono placeholder-gray-700 shadow-[inset_0_2px_4px_rgba(0,0,0,0.4)]"
+              />
+              {usernameSearch && (
                 <button 
-                  onClick={() => {
-                    saveSyncedContactsLocal([]);
-                    setSyncedContacts([]);
-                  }}
-                  className="text-xxs font-mono text-red-400 hover:text-red-300 transition"
+                  onClick={() => setUsernameSearch("")} 
+                  className="absolute right-3 top-3.5 text-gray-500 hover:text-white"
                 >
-                  Clear Cache
+                  <X className="w-3.5 h-3.5" />
                 </button>
               )}
             </div>
+          </div>
 
-            {syncedContacts.length === 0 ? (
-              <div className="text-center py-16 text-gray-500 font-mono text-xxs border border-white/5 p-4 rounded-3xl mx-1 bg-[#090909]">
-                💔 No active synced records in index directory. Click "Discover & Sync Contacts" above to begin.
+          {/* Search result display panel */}
+          <div className="space-y-3 pt-2">
+            {usernameSearchState === "searching" && (
+              <div className="py-12 flex flex-col items-center gap-2 text-center text-gray-500 font-mono text-xxs">
+                <Loader2 className="w-5 h-5 text-[#00D1FF] animate-spin" />
+                <p className="animate-pulse">Locating registry node for "@{usernameSearch}"...</p>
               </div>
-            ) : (
-              <div className="space-y-2">
-                {syncedContacts.map((contact, i) => {
-                  return (
-                    <div 
-                      key={i} 
-                      className={`p-3 rounded-2xl bg-[#0A0A0A] border flex items-center justify-between transition duration-200 ${
-                        contact.isRegistered 
-                          ? "border-[#00FF9C]/25" 
-                          : "border-white/5 opacity-80"
-                      }`}
-                    >
-                      <div className="flex items-center gap-3">
-                        <div className="relative">
-                          {contact.isRegistered && contact.profile ? (
-                            <img 
-                              src={contact.profile.photoURL} 
-                              alt={contact.name} 
-                              className="w-9 h-9 rounded-full object-cover border border-[#00FF9C]/20" 
-                            />
-                          ) : (
-                            <div className="w-9 h-9 rounded-full bg-zinc-900 border border-white/10 flex items-center justify-center text-xs font-bold text-gray-400">
-                              {contact.name.charAt(0).toUpperCase()}
-                            </div>
-                          )}
-                          {contact.isRegistered && (
-                            <span className="absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full bg-[#00FF9C] border-2 border-[#0A0A0A]" />
-                          )}
-                        </div>
-                        <div>
-                          <div className="flex items-center gap-1.5">
-                            <span className="text-xs font-bold font-mono text-white leading-none">{contact.name}</span>
-                            {contact.isRegistered ? (
-                              <span className="bg-[#00FF9C]/15 border border-[#00FF9C]/30 text-[#00FF9C] text-[8px] font-mono font-bold tracking-widest uppercase rounded px-1 scale-90">Matched</span>
-                            ) : (
-                              <span className="bg-white/5 border border-white/10 text-gray-500 text-[8px] font-mono tracking-widest uppercase rounded px-1 scale-90">Invite</span>
-                            )}
-                          </div>
-                          <p className="text-xxs text-gray-400 font-mono mt-1">{contact.phone}</p>
-                        </div>
-                      </div>
+            )}
 
-                      <div>
-                        {contact.isRegistered && contact.profile ? (
-                          <button
-                            id={`sync-start-chat-${i}`}
-                            onClick={() => onSelectContact(contact.profile!.uid)}
-                            className="px-3 py-1.5 bg-[#00FF9C]/15 border border-[#00FF9C]/40 text-[#00FF9C] hover:bg-[#00FF9C]/25 rounded-xl font-mono text-[9px] font-semibold tracking-wider uppercase transition flex items-center gap-1 cursor-pointer"
-                          >
-                            <MessageSquare className="w-3 h-3" /> Chat
-                          </button>
-                        ) : (
-                          <button
-                            id={`sync-invite-${i}`}
-                            onClick={() => {
-                              const smsText = encodeURIComponent("Join me on MAHRAJ Messenger, the ultra-secure neon communication app! Chat encrypted.");
-                              window.open(`sms:${contact.phone}?body=${smsText}`);
-                            }}
-                            className="px-3 py-1.5 bg-transparent border border-white/10 hover:border-white/30 text-gray-450 hover:text-white rounded-xl font-mono text-[9px] tracking-wider uppercase transition flex items-center gap-1 cursor-pointer"
-                          >
-                            <Share2 className="w-3 w-3" /> Invite
-                          </button>
-                        )}
-                      </div>
+            {usernameSearchState === "found" && usernameSearchResult && (() => {
+              const u = usernameSearchResult;
+              const req = friendRequests.find(r => 
+                (r.senderId === currentUserId && r.receiverId === u.uid) ||
+                (r.senderId === u.uid && r.receiverId === currentUserId)
+              );
+
+              return (
+                <div className="bg-[#0E0E0E] border-2 border-[#00D1FF]/30 rounded-3xl p-4 space-y-4 shadow-[0_4px_25px_rgba(0,209,255,0.05)] animate-slideUp">
+                  <div className="flex items-center gap-3">
+                    <div className="relative shrink-0">
+                      <img 
+                        src={u.photoURL} 
+                        alt={u.displayName} 
+                        className="w-12 h-12 rounded-full object-cover border-2 border-[#00D1FF]/20" 
+                      />
+                      {u.isOnline && (
+                        <span className="absolute bottom-0 right-0 w-3 h-3 rounded-full bg-[#00FF9C] border-2 border-[#0E0E0E] animate-pulse" />
+                      )}
                     </div>
-                  );
-                })}
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <h4 className="text-xs font-bold text-white font-mono uppercase tracking-wide truncate">{u.displayName}</h4>
+                        <span className="bg-[#00D1FF]/10 text-[#00D1FF] text-[8px] font-mono px-1 rounded border border-[#00D1FF]/20 font-bold uppercase tracking-wider">@{u.username}</span>
+                      </div>
+                      <p className="text-[10px] text-gray-400 font-medium truncate mt-0.5">{u.bio || "No status bio available"}</p>
+                    </div>
+                  </div>
+
+                  <div className="border-t border-white/5 pt-3 flex items-center justify-between">
+                    <span className="text-[9px] font-mono text-gray-550">Registry Node ID: {u.uid.substring(0, 10)}...</span>
+                    
+                    <div>
+                      {(!req || req.status === "declined") ? (
+                        <button
+                          id="username-btn-send-request"
+                          onClick={async () => {
+                            const me = getSenderDetails();
+                            await sendFriendRequest(
+                              currentUserId, 
+                              me.displayName, 
+                              me.photoURL, 
+                              u.uid, 
+                              u.displayName, 
+                              u.photoURL
+                            );
+                          }}
+                          className="px-3.5 py-2 bg-[#00D1FF] hover:bg-sky-400 text-black font-semibold rounded-xl text-[10px] font-mono uppercase tracking-wider flex items-center gap-1.5 transition-all outline-none"
+                        >
+                          <UserPlus className="w-3.5 h-3.5" /> Send Friend Request
+                        </button>
+                      ) : req.status === "pending" ? (
+                        req.senderId === currentUserId ? (
+                          <div className="px-3 py-1.5 bg-sky-950/20 border border-sky-500/30 text-[#00D1FF] rounded-xl text-[10px] font-mono uppercase tracking-wider flex items-center gap-1.5">
+                            <Clock className="w-3.5 h-3.5 animate-pulse" /> Outgoing Pending
+                          </div>
+                        ) : (
+                          <div className="flex gap-2">
+                            <button
+                              id="username-btn-accept"
+                              onClick={async () => {
+                                await acceptFriendRequest(req.id);
+                              }}
+                              className="px-3 py-1.5 bg-[#00FF9C] hover:bg-emerald-400 text-black font-extrabold rounded-lg text-[10px] font-mono uppercase tracking-wider transition flex items-center gap-1"
+                            >
+                              <Check className="w-3.5 h-3.5" /> Accept
+                            </button>
+                            <button
+                              id="username-btn-decline"
+                              onClick={async () => {
+                                await declineFriendRequest(req.id);
+                              }}
+                              className="px-3 py-1.5 bg-red-950/25 border border-red-500/30 text-red-400 hover:bg-red-550 rounded-lg text-[10px] font-mono uppercase transition"
+                            >
+                              Decline
+                            </button>
+                          </div>
+                        )
+                      ) : (
+                        <button
+                          id="username-btn-start-chat"
+                          onClick={() => onSelectContact(u.uid)}
+                          className="px-4 py-2 bg-[#00FF9C] hover:bg-emerald-400 text-black font-extrabold rounded-xl text-[10px] font-mono tracking-wider uppercase transition flex items-center gap-1.5 shadow-[0_0_15px_rgba(0,255,156,0.3)]"
+                        >
+                          <MessageSquare className="w-3.5 h-3.5" /> Start Chat
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              );
+            })()}
+
+            {usernameSearchState === "not_found" && (
+              <div className="p-6 bg-red-950/10 border-2 border-dashed border-red-500/20 rounded-3xl text-center space-y-2 py-8">
+                <p className="text-sm font-bold text-red-400 font-mono tracking-wider uppercase">User not found</p>
+                <p className="text-[10px] text-gray-500 max-w-xs mx-auto leading-normal font-sans">
+                  The username "<span className="text-white font-mono">@{usernameSearch}</span>" is not linked to any registration nodes in our network directory. Try another search.
+                </p>
+              </div>
+            )}
+
+            {usernameSearchState === "idle" && !usernameSearch && (
+              <div className="text-center py-16 text-gray-550 font-mono text-xxs border border-white/5 p-4 rounded-3xl bg-[#090909]">
+                🔑 Enter an exact username in the input above to query user nodes, invite them, and start chatting securely once accepted!
               </div>
             )}
           </div>

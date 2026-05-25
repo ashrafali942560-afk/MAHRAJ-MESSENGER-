@@ -8,6 +8,8 @@ export interface UserProfile {
   lastSeen?: string;
   fcmToken?: string;
   blockedUsers?: string[];
+  email?: string;
+  username?: string;
 }
 
 export interface ChatRoom {
@@ -42,6 +44,15 @@ export interface Message {
   fileSize?: string;
   timestamp: string;
   status: "sent" | "delivered" | "read";
+  offlineLocalPath?: string; // e.g. /storage/emulated/0/.../uuid.jpg
+  offlineMetadataJSON?: string; // JSON parsed from Gemini or sandbox callback
+  sqliteQueryLog?: string; // The simulated SQL transaction triggered log
+  simulatedOS?: "Android" | "iOS"; // Simulated mobile device OS
+  reactions?: Array<{
+    emoji: string;
+    userId: string;
+    userName: string;
+  }>;
 }
 
 export interface StatusStory {
@@ -50,9 +61,16 @@ export interface StatusStory {
   userName: string;
   userAvatar: string;
   mediaUrl?: string;
+  mediaType?: "image" | "video";
   text?: string;
   timestamp: string;
   viewed?: boolean;
+  viewers?: Array<{
+    userId: string;
+    userName: string;
+    userAvatar: string;
+    timestamp: string;
+  }>;
 }
 
 export interface CallLog {
@@ -68,3 +86,16 @@ export interface CallLog {
   token?: string;
   channelName?: string;
 }
+
+export interface FriendRequest {
+  id: string;
+  senderId: string;
+  senderName: string;
+  senderPhotoURL: string;
+  receiverId: string;
+  receiverName: string;
+  receiverPhotoURL: string;
+  status: "pending" | "accepted" | "declined";
+  timestamp: string;
+}
+

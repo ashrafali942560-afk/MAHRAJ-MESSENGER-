@@ -20,3 +20,260 @@
     box-shadow: 0 0 20px rgba(0, 255, 156, 0.35), inset 0 0 10px rgba(0, 255, 156, 0.15);
   }
 }
+
+/* Comprehensive Advanced Light Theme System */
+.light-theme {
+  color-scheme: light;
+}
+
+/* Base Body and Background overrides */
+.light-theme,
+.light-theme body,
+.light-theme #root,
+.light-theme .bg-\[\#050505\],
+.light-theme .bg-[#050505] {
+  background-color: #f3f5f8 !important;
+  color: #1e293b !important;
+}
+
+/* Pure Whites for Panels, Dialogs, Cards and Lists to match clean material look */
+.light-theme .bg-\[\#0A0A0A\],
+.light-theme .bg-[#0A0A0A],
+.light-theme .bg-\[\#0E0E0E\],
+.light-theme .bg-[#0E0E0E],
+.light-theme .bg-\[\#080808\],
+.light-theme .bg-[#080808],
+.light-theme .bg-\[\#090909\],
+.light-theme .bg-[#090909],
+.light-theme .bg-\[\#0C1013\],
+.light-theme .bg-[#0C1013] {
+  background-color: #ffffff !important;
+  border-color: rgba(0, 0, 0, 0.08) !important;
+  color: #1e293b !important;
+}
+
+/* Sub-card colors for inputs, list items and secondary details */
+.light-theme .bg-\[\#0F0F0F\],
+.light-theme .bg-[#0F0F0F],
+.light-theme .bg-\[\#121212\],
+.light-theme .bg-[#121212],
+.light-theme .bg-\[\#181818\],
+.light-theme .bg-[#181818],
+.light-theme .bg-\[\#090D10\],
+.light-theme .bg-[#090D10] {
+  background-color: #f8fafc !important;
+  border-color: rgba(0, 0, 0, 0.08) !important;
+  color: #1e293b !important;
+}
+
+/* Foreground texts overrides for perfect contrast */
+.light-theme .text-white,
+.light-theme .text-[#C5C6C7] {
+  color: #0f172a !important;
+}
+
+.light-theme .text-gray-200 {
+  color: #1e293b !important;
+}
+
+.light-theme .text-gray-300 {
+  color: #334155 !important;
+}
+
+.light-theme .text-gray-400 {
+  color: #475569 !important;
+}
+
+.light-theme .text-gray-500,
+.light-theme .text-gray-550 {
+  color: #64748b !important;
+}
+
+.light-theme .text-gray-600,
+.light-theme .text-gray-650 {
+  color: #94a3b8 !important;
+}
+
+/* High contrast neon glow translations in light theme */
+.light-theme .text-\[\#00FF9C\] {
+  color: #0d9488 !important; /* solid contrast teal */
+}
+
+.light-theme .text-\[\#00D1FF\] {
+  color: #0284c7 !important; /* solid contrast ocean blue */
+}
+
+.light-theme .border-\[\#00FF9C\]\/10,
+.light-theme .border-\[\#00FF9C\]\/20,
+.light-theme .border-\[\#00FF9C\]\/30,
+.light-theme .border-\[\#00FF9C\]\/40,
+.light-theme .border-\[\#00FF9C\] {
+  border-color: rgba(13, 148, 136, 0.3) !important;
+}
+
+.light-theme .border-\[\#00D1FF\]\/10,
+.light-theme .border-\[\#00D1FF\]\/20,
+.light-theme .border-\[\#00D1FF\]\/30,
+.light-theme .border-\[\#00D1FF\]\/45,
+.light-theme .border-\[\#00D1FF\] {
+  border-color: rgba(2, 132, 199, 0.3) !important;
+}
+
+/* Universal generic borders override */
+.light-theme .border-white\/5,
+.light-theme .border-white\/10,
+.light-theme .border-gray-800 {
+  border-color: rgba(0, 0, 0, 0.1) !important;
+}
+
+/* Inputs, Textareas, and Dropdown Forms in light mode */
+.light-theme input,
+.light-theme textarea,
+.light-theme select {
+  background-color: #ffffff !important;
+  color: #0f172a !important;
+  border: 1px solid rgba(0, 0, 0, 0.12) !important;
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.03) !important;
+}
+
+.light-theme input:focus,
+.light-theme textarea:focus,
+.light-theme select:focus {
+  border-color: #0d9488 !important;
+}
+
+.light-theme input::placeholder,
+.light-theme textarea::placeholder {
+  color: #94a3b8 !important;
+}
+
+/* Transparent overlays */
+.light-theme .bg-black\/30,
+.light-theme .bg-black\/40,
+.light-theme .bg-black\/50,
+.light-theme .bg-black\/60 {
+  background-color: rgba(0, 0, 0, 0.04) !important;
+}
+
+.light-theme .bg-\[\#050505\]\/95,
+.light-theme .bg-\[\#050505\]\/90 {
+  background-color: rgba(243, 245, 248, 0.95) !important;
+}
+
+/* Sent message bubble (Green accent chat bubble) */
+.light-theme .bg-emerald-950\/50,
+.light-theme .bg-\[\#0b141a\],
+.light-theme .bg-\[\#0B141A\] {
+  background-color: #e2fbe2 !important;
+  border: 1px solid #c9ecbe !important;
+  color: #14532d !important;
+}
+
+.light-theme .bg-emerald-950\/50 *,
+.light-theme .bg-\[\#0b141a\] *,
+.light-theme .bg-\[\#0B141A\] * {
+  color: #14532d !important;
+}
+
+.light-theme .bg-emerald-950\/50 .text-emerald-400 {
+  color: #166534 !important;
+}
+
+/* Received message bubble (Greyish white bubble) */
+.light-theme .bg-\[\#202c33\],
+.light-theme .bg-\[\#0A1116\] {
+  background-color: #ffffff !important;
+  border: 1px solid rgba(0, 0, 0, 0.08) !important;
+  color: #1e293b !important;
+}
+
+.light-theme .bg-\[\#202c33\] *,
+.light-theme .bg-\[\#0A1116\] * {
+  color: #1e293b !important;
+}
+
+/* Chat Input Bar integration */
+.light-theme .border-t.border-white\/5 {
+  border-top-color: rgba(0, 0, 0, 0.08) !important;
+}
+
+/* Floating status stories circle lines background */
+.light-theme .p-\[2px\].bg-\[\#0A0A0A\] {
+  background-color: #ffffff !important;
+}
+
+/* Buttons glow adaptation */
+.light-theme .shadow-\[0_0_15px_rgba\(0\,255\,156\,0\.25\)\] {
+  shadow: 0 4px 12px rgba(13, 148, 136, 0.2) !important;
+}
+
+.light-theme button#profile-settings-btn {
+  background-color: #ffffff !important;
+  border: 1.5px solid #0d9488 !important;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+}
+
+/* Light Mode active tabs styling */
+.light-theme .border-b-2.border-\[\#00FF9C\] {
+  border-bottom-color: #0d9488 !important;
+  color: #0d9488 !important;
+}
+
+.light-theme .text-\[\#00D1FF\].font-semibold {
+  color: #0284c7 !important;
+}
+
+/* Correcting shadow details inside light theme components */
+.light-theme .shadow-\[0_4px_15px_rgba\(0\,0\,0\,0\.5\)\] {
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05) !important;
+}
+
+/* Attachment Panel popup background styling */
+.light-theme #attachments-panel {
+  background-color: #ffffff !important;
+  border-color: rgba(0,0,0,0.12) !important;
+  box-shadow: 0 10px 25px rgba(0,0,0,0.1) !important;
+}
+
+/* Call dialog internal card */
+.light-theme .bg-\[\#070b15\]\/80,
+.light-theme .bg-\[\#070b15\] {
+  background-color: #f1f5f9 !important;
+  border-color: rgba(0, 0, 0, 0.1) !important;
+  color: #0f172a !important;
+}
+
+/* Group management drawers list items styling */
+.light-theme .hover\:bg-white\/5:hover {
+  background-color: rgba(0, 0, 0, 0.03) !important;
+}
+
+.light-theme .hover\:bg-\[\#0A0A0A\]\/60:hover {
+  background-color: rgba(255, 255, 255, 0.82) !important;
+}
+
+/* Scanline and dark glow filter disables */
+.light-theme .opacity-50 {
+  opacity: 0.05 !important;
+}
+
+.light-theme .bg-\[linear-gradient\(rgba\(18\,16\,16\,0\)_50\%\,_rgba\(0\,0\,0\,0\.3\)_50\%\)\,_linear-gradient\(90deg\,_rgba\(0\,255\,156\,0\.03\)\,_rgba\(0\,209\,255\,0\.02\)\,_rgba\(0\,255\,156\,0\.03\)\)\] {
+  opacity: 0 !important;
+}
+
+/* Smooth selection and customized light theme scrollbar */
+.light-theme ::selection {
+  background-color: #0d9488 !important;
+  color: #ffffff !important;
+}
+
+.light-theme .scrollbar-thin::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.15);
+  border-radius: 99px;
+}
+
+.light-theme .scrollbar-thin::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+
